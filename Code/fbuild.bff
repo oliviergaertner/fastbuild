@@ -4,8 +4,9 @@
 ;-------------------------------------------------------------------------------
 ; Windows Platform
 ;-------------------------------------------------------------------------------
-.VSBasePath			= '../External/SDK/VS13.4'
+.VSBasePath			= '../External/SDK/VS15'
 .WindowsSDKBasePath	= '../External/SDK/Windows8.1'
+.WindowsSDKBasePath10	= '../External/SDK/Windows10'
 .ClangBasePath		= '../External/SDK/ClangForWindows/3.6'
 
 ;-------------------------------------------------------------------------------
@@ -47,8 +48,7 @@ Compiler( 'Compiler-x86' )
 					'$Root$\1033\clui.dll'
 					'$VSBasePath$\VC\redist\x86\Microsoft.VC120.CRT\msvcp120.dll'
 					'$VSBasePath$\VC\redist\x86\Microsoft.VC120.CRT\msvcr120.dll'
-					'$VSBasePath$\VC\redist\x86\Microsoft.VC120.CRT\vccorlib120.dll'
-				  }
+					'$VSBasePath$\VC\redist\x86\Microsoft.VC120.CRT\vccorlib120.dll'				  }
 }
 Compiler( 'Compiler-x64' )
 {
@@ -73,7 +73,7 @@ Compiler( 'Compiler-x64' )
 Compiler( 'Compiler-x86Clang' )
 {
 	.Root		= '$ClangBasePath$'
-	.Executable	= '$Root$\bin\clang++.exe'
+	.Executable	= '$Root$\bin\vs2015\x86\release\clang++.exe'
 }
 Compiler( 'Compiler-x64-Linux' )
 {
@@ -127,10 +127,12 @@ Compiler( 'Compiler-x64-OSX' )
 							+ ' /I"$VSBasePath$/VC/include/"'
 							+ ' /I"$WindowsSDKBasePath$/include/um"'
 							+ ' /I"$WindowsSDKBasePath$/include/shared"'
+							+ ' /I"$WindowsSDKBasePath10$/include/10.0.10240.0/ucrt"'
 	.CompilerOptions		+ .BaseIncludePaths
 	.PCHOptions				+ .BaseIncludePaths
 
-	.WindowsLibPaths		= '$WindowsSDKBasePath$/lib/winv6.3/um'
+	.WindowsLibPaths		= '$WindowsSDKBasePath$/Lib/winv6.3/um'
+	.Windows10LibPaths      = '$WindowsSDKBasePath10$/lib/10.0.10240.0/ucrt'					
 
 	.UseExceptions			= ' /EHsc'
 ]
@@ -150,7 +152,7 @@ Compiler( 'Compiler-x64-OSX' )
 							+ ' /DWIN32'
 	.LinkerOptions			+ ' /MACHINE:X86'
 	.Platform				= 'x86'
-	.LinkerOptions			+ ' /LIBPATH:"$WindowsLibPaths$/x86" /LIBPATH:"$VSBasePath$/VC/lib"'
+	.LinkerOptions			+ ' /LIBPATH:"$WindowsLibPaths$/x86" /LIBPATH:"$VSBasePath$/VC/lib" /LIBPATH:"$Windows10LibPaths$/x86"'
 ]
 .X86DebugConfig =
 [
@@ -204,7 +206,7 @@ Compiler( 'Compiler-x64-OSX' )
 	.PCHOptions				+ ' /DWIN64'
 	.LinkerOptions			+ ' /MACHINE:X64'
 	.Platform				= 'x64'
-	.LinkerOptions			+ ' /LIBPATH:"$WindowsLibPaths$/x64" /LIBPATH:"$VSBasePath$/VC/lib/amd64"'
+	.LinkerOptions			+ ' /LIBPATH:"$WindowsLibPaths$/x64" /LIBPATH:"$VSBasePath$/VC/lib/amd64" /LIBPATH:"$Windows10LibPaths$/x64"'
 ]
 .X64DebugConfig =
 [

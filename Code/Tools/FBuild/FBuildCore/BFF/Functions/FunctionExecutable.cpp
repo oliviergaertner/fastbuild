@@ -298,6 +298,14 @@ bool FunctionExecutable::DependOnNode( const BFFIterator & iter, Node * node, De
 		return true;
 	}
 
+	// an external executable ?
+	if (node->GetType() == Node::EXE_NODE)
+	{
+		// depend on node - will use exe output at build time
+		nodes.Append(Dependency(node));
+		return true;
+	}
+
 	// a group (alias)?
 	if ( node->GetType() == Node::ALIAS_NODE )
 	{
