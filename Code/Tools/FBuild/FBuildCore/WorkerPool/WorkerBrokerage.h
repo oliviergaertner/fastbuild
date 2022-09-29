@@ -1,8 +1,6 @@
 // WorkerBrokerage - Manage worker discovery
 //------------------------------------------------------------------------------
 #pragma once
-#ifndef FBUILD_WORKERBROKERAGE_H
-#define FBUILD_WORKERBROKERAGE_H
 
 // Includes
 //------------------------------------------------------------------------------
@@ -17,24 +15,34 @@
 class WorkerBrokerage
 {
 public:
-	WorkerBrokerage();
-	~WorkerBrokerage();
+    WorkerBrokerage();
+    ~WorkerBrokerage();
 
-	// client interface
-	void FindWorkers( Array< AString > & workerList );
+    inline const Array<AString> & GetBrokerageRoots() const { return m_BrokerageRoots; }
+    inline const AString & GetBrokerageRootPaths() const { return m_BrokerageRootPaths; }
+    inline const AString & GetHostName() const { return m_HostName; }
 
-	// server interface
-	void SetAvailability( bool available );
+    // client interface
+    void FindWorkers( Array< AString > & workerList );
+
+    // server interface
+    void SetAvailability( bool available );
 private:
-	void Init();
+    void InitBrokerage();
+    void UpdateBrokerageFilePath();
 
-	AString				m_BrokerageRoot;
-	bool				m_Availability;
-	bool				m_Initialized;
+    Array<AString>      m_BrokerageRoots;
+    AString             m_BrokerageRootPaths;
+    bool                m_Availability;
+    bool                m_BrokerageInitialized;
     AString             m_HostName;
+    AString             m_DomainName;
+    AString             m_IPAddress;
     AString             m_BrokerageFilePath;
     Timer               m_TimerLastUpdate;      // Throttle network access
+    Timer               m_TimerLastIPUpdate;    // Throttle dns access
+    uint64_t            m_SettingsWriteTime;    // FileTime of settings time when last changed
+    Timer               m_TimerLastCleanBroker;
 };
 
 //------------------------------------------------------------------------------
-#endif // FBUILD_WORKERBROKERAGE_H 

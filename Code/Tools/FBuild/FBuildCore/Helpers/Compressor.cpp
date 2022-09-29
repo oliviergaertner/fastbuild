@@ -3,25 +3,29 @@
 
 // Includes
 //------------------------------------------------------------------------------
-#include "Tools/FBuild/FBuildCore/PrecompiledHeader.h"
-
 #include "Compressor.h"
 
-#include "Core/Containers/AutoPtr.h"
+// FBuildCore
+#include "Tools/FBuild/FBuildCore/FBuild.h"
+
+// Core
+#include "Core/Containers/UniquePtr.h"
 #include "Core/Env/Assert.h"
 #include "Core/Env/Types.h"
 #include "Core/Math/Conversions.h"
 #include "Core/Mem/Mem.h"
 #include "Core/Profile/Profile.h"
 
+// External
 #include "lz4.h"
+#include "lz4hc.h"
 
 #include <memory.h>
 
 //------------------------------------------------------------------------------
 Compressor::Compressor()
-	: m_Result( nullptr )
-	, m_ResultSize( 0 )
+    : m_Result( nullptr )
+    , m_ResultSize( 0 )
 {
 }
 
@@ -29,106 +33,143 @@ Compressor::Compressor()
 //------------------------------------------------------------------------------
 Compressor::~Compressor()
 {
-	FREE( m_Result );
+    FREE( m_Result );
 }
 
 // IsValidData
 //------------------------------------------------------------------------------
-bool Compressor::IsValidData( const void * data, size_t dataSize ) const
+/*static*/ bool Compressor::IsValidData( const void * data, size_t dataSize )
 {
-	const Header * header = (const Header *)data;
-	if ( header->m_CompressionType > 1 )
-	{
-		return false;
-	}
-	if ( ( header->m_CompressedSize + sizeof( Header ) ) != dataSize )
-	{
-		return false;
-	}
-	if ( header->m_CompressedSize > header->m_UncompressedSize )
-	{
-		return false;
-	}
-	return true;
+    ASSERT( data );
+    const Header * header = (const Header *)data;
+    if ( header->m_CompressionType > 1 )
+    {
+        return false;
+    }
+    if ( ( header->m_CompressedSize + sizeof( Header ) ) != dataSize )
+    {
+        return false;
+    }
+    if ( header->m_CompressedSize > header->m_UncompressedSize )
+    {
+        return false;
+    }
+    return true;
+}
+
+// GetUncompressedSize
+//------------------------------------------------------------------------------
+/*static*/ uint32_t Compressor::GetUncompressedSize( const void * data, size_t dataSize )
+{
+    // Only valid to call on data that is known to be compressor format
+    ASSERT( IsValidData( data, dataSize ) );
+    (void)dataSize;
+
+    const Header * header = (const Header *)data;
+    return header->m_UncompressedSize;
 }
 
 // Compress
 //------------------------------------------------------------------------------
-bool Compressor::Compress( const void * data, size_t dataSize )
+bool Compressor::Compress( const void * data, size_t dataSize, int32_t compressionLevel )
 {
-    PROFILE_FUNCTION
+    PROFILE_FUNCTION;
 
-	ASSERT( data );
-	ASSERT( ( (size_t)data % 4 ) == 0 ); // input must be 4 byte aligned
-	ASSERT( m_Result == nullptr );
+    ASSERT( data );
+    ASSERT( m_Result == nullptr );
 
-	// allocate worst case output size for LZ4
-	const int worstCaseSize = LZ4_compressBound( (int)dataSize );
-	AutoPtr< char > output( (char *)ALLOC( worstCaseSize ) );
+    // allocate worst case output size for LZ4
+    const int worstCaseSize = LZ4_compressBound( (int)dataSize );
+    UniquePtr< char > output( (char *)ALLOC( (size_t)worstCaseSize ) );
 
-	// do compression
-	const int compressedSize = LZ4_compress( (const char*)data, output.Get(), (int)dataSize);
+    int32_t compressedSize;
 
-	// did the compression yield any benefit?
-	const bool compressed = ( compressedSize < (int)dataSize );
+    // do compression
+    if ( compressionLevel > 0 )
+    {
+        // Higher compression, using LZ4HC
+        compressedSize = LZ4_compress_HC( (const char*)data, output.Get(), (int)dataSize, worstCaseSize, compressionLevel );
+    }
+    else if ( compressionLevel < 0 )
+    {
+        // Lower compression, using regular LZ4
+        const int32_t acceleration = ( 0 - compressionLevel );
+        compressedSize = LZ4_compress_fast( (const char*)data, output.Get(), (int)dataSize, worstCaseSize, acceleration );
+    }
+    else
+    {
+        // Disable compression
+        compressedSize = (int32_t)dataSize; // Act as if compression achieved nothing
+    }
 
-	if ( compressed )
-	{
-		// trim memory usage to compressed size
-		m_Result = ALLOC( compressedSize + sizeof( Header ) );
-		memcpy( (char *)m_Result + sizeof( Header ), output.Get(), compressedSize );
-		m_ResultSize = compressedSize + sizeof( Header );
-	}
-	else
-	{
-		// compression failed, so just copy the old data
-		m_Result = ALLOC( dataSize + sizeof( Header ) );
-		memcpy( (char *)m_Result + sizeof( Header ), data, dataSize );
-		m_ResultSize = dataSize + sizeof( Header );
-	}
+    // did the compression yield any benefit?
+    const bool compressed = ( compressedSize < (int)dataSize );
 
-	// fill out header
-	Header * header = (Header*)m_Result;
-	header->m_CompressionType = compressed ? 1 : 0;		// compression type
-	header->m_UncompressedSize = (uint32_t)dataSize;	// input size
-	header->m_CompressedSize = compressed ? compressedSize : (uint32_t)dataSize;	// output size
+    if ( compressed )
+    {
+        // trim memory usage to compressed size
+        m_Result = ALLOC( (uint32_t)compressedSize + sizeof( Header ) );
+        memcpy( (char *)m_Result + sizeof( Header ), output.Get(), (size_t)compressedSize );
+        m_ResultSize = (uint32_t)compressedSize + sizeof( Header );
+    }
+    else
+    {
+        // compression failed, so just copy the old data
+        m_Result = ALLOC( dataSize + sizeof( Header ) );
+        memcpy( (char *)m_Result + sizeof( Header ), data, dataSize );
+        m_ResultSize = dataSize + sizeof( Header );
+    }
 
-	return compressed;
+    // fill out header
+    Header * header = (Header*)m_Result;
+    header->m_CompressionType = compressed ? 1u : 0u;   // compression type
+    header->m_UncompressedSize = (uint32_t)dataSize;    // input size
+    header->m_CompressedSize = compressed ? (uint32_t)compressedSize : (uint32_t)dataSize;    // output size
+
+    return compressed;
 }
 
 // Decompress
 //------------------------------------------------------------------------------
-void Compressor::Decompress( const void * data )
+bool Compressor::Decompress( const void * data )
 {
-    PROFILE_FUNCTION
+    PROFILE_FUNCTION;
 
-	ASSERT( data );
-	ASSERT( ( (size_t)data % 4 ) == 0 ); // output must be 4 byte aligned
-	ASSERT( m_Result == nullptr );
+    ASSERT( data );
+    ASSERT( m_Result == nullptr );
 
-	const Header * header = (const Header *)data;
+    const Header * header = (const Header *)data;
 
-	// handle uncompressed case
-	if ( header->m_CompressionType == 0 )
-	{
-		m_Result = ALLOC( header->m_UncompressedSize );
-		memcpy( m_Result, (char *)data + sizeof( Header ), header->m_UncompressedSize );
-		m_ResultSize = header->m_UncompressedSize;
-		return;
-	}
-	ASSERT( header->m_CompressionType == 1 );
+    // handle uncompressed case
+    if ( header->m_CompressionType == 0 )
+    {
+        m_Result = ALLOC( header->m_UncompressedSize );
+        memcpy( m_Result, (const char *)data + sizeof( Header ), header->m_UncompressedSize );
+        m_ResultSize = header->m_UncompressedSize;
+        return true;
+    }
+    ASSERT( header->m_CompressionType == 1 );
 
-	// uncompressed size
-	const uint32_t uncompressedSize = header->m_UncompressedSize;
-	m_Result = ALLOC( uncompressedSize );
-	m_ResultSize = uncompressedSize;
+    // uncompressed size
+    const uint32_t uncompressedSize = header->m_UncompressedSize;
+    m_Result = ALLOC( uncompressedSize );
+    m_ResultSize = uncompressedSize;
 
-	// skip over header to LZ4 data
-	const char * compressedData = ( (const char *)data + sizeof( Header ) );
+    // skip over header to LZ4 data
+    const char * compressedData = ( (const char *)data + sizeof( Header ) );
 
-	// decompress
-	const int compressedSize = LZ4_decompress_fast( compressedData, (char *)m_Result, (int)uncompressedSize);
-	ASSERT( compressedSize == (int)header->m_CompressedSize ); (void)compressedSize;
+    // decompress
+    const int bytesDecompressed = LZ4_decompress_safe( compressedData, (char *)m_Result, (int)header->m_CompressedSize, (int)uncompressedSize);
+    if ( bytesDecompressed == (int)uncompressedSize )
+    {
+        return true;
+    }
+
+    // Data is corrupt
+    FREE( m_Result );
+    m_Result = nullptr;
+    m_ResultSize = 0;
+    return false;
 }
 
 //------------------------------------------------------------------------------

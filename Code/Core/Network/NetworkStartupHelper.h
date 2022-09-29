@@ -1,13 +1,11 @@
 // NetworkStartupHelper
 //------------------------------------------------------------------------------
 #pragma once
-#ifndef CORE_NETWORK_NETWORKSTARTUPHELPER_H
-#define CORE_NETWORK_NETWORKSTARTUPHELPER_H
 
 // Includes
 //------------------------------------------------------------------------------
 #if defined( __WINDOWS__ )
-    #include <winsock2.h>
+    #include "Core/Env/WindowsHeader.h"
 #endif
 
 #include "Core/Env/Types.h"
@@ -19,16 +17,21 @@ class NetworkStartupHelper
 {
 public:
     // ensure the network is up around the scope of this object
-	NetworkStartupHelper();
-    ~NetworkStartupHelper();
+    NetworkStartupHelper();
+    ~NetworkStartupHelper() = default;
+
+    // Set main flag to help abort network operations
+    // NOTE: Flag must remain available once set (i.e. static var)
+    static void SetMainShutdownFlag( volatile bool * shutdownFlag );
+    static bool IsShuttingDown();
 
 private:
-#if defined( __WINDOWS__ )
-	static WSADATA s_WSAData;
-#endif
-	static Mutex s_Mutex;
-    static uint32_t s_RefCount;
+    static bool s_Started;
+    static Mutex s_Mutex;
+    static volatile bool * s_MainShutdownFlag;
+    #if defined( __WINDOWS__ )
+        static WSADATA s_WSAData;
+    #endif
 };
 
 //------------------------------------------------------------------------------
-#endif // CORE_NETWORK_NETWORKSTARTUPHELPER_H

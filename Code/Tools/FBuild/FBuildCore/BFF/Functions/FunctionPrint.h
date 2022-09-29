@@ -1,8 +1,6 @@
 // FunctionPrint
 //------------------------------------------------------------------------------
 #pragma once
-#ifndef FBUILD_FUNCTIONS_FUNCTIONPRINT_H
-#define FBUILD_FUNCTIONS_FUNCTIONPRINT_H
 
 // Includes
 //------------------------------------------------------------------------------
@@ -13,22 +11,21 @@
 class FunctionPrint : public Function
 {
 public:
-	explicit		FunctionPrint();
-	inline virtual ~FunctionPrint() {}
+    explicit        FunctionPrint();
+    inline virtual ~FunctionPrint() override = default;
 
 protected:
-	virtual bool AcceptsHeader() const;
-	virtual bool NeedsHeader() const;
-	virtual bool NeedsBody() const;
+    virtual bool AcceptsHeader() const override;
+    virtual bool NeedsHeader() const override;
+    virtual bool NeedsBody() const override;
 
-	virtual bool ParseFunction( const BFFIterator & functionNameStart,
-								const BFFIterator * functionBodyStartToken, 
-								const BFFIterator * functionBodyStopToken,
-								const BFFIterator * functionHeaderStartToken,
-								const BFFIterator * functionHeaderStopToken ) const;
+    virtual bool ParseFunction( NodeGraph & nodeGraph,
+                                BFFParser & parser,
+                                const BFFToken * functionNameStart,
+                                const BFFTokenRange & headerRange,
+                                const BFFTokenRange & bodyRange ) const override;
 
-	static void PrintVarRecurse( const BFFVariable & var, uint32_t indent );
+    static void PrintVarRecurse( const BFFVariable & var, uint32_t indent );
 };
 
 //------------------------------------------------------------------------------
-#endif // FBUILD_FUNCTIONS_FUNCTIONPRINT_H

@@ -1,41 +1,54 @@
 // TestNode.h - Run a Test
 //------------------------------------------------------------------------------
 #pragma once
-#ifndef FBUILD_GRAPH_TESTNODE_H
-#define FBUILD_GRAPH_TESTNODE_H
 
 // Includes
 //------------------------------------------------------------------------------
 #include "ExecNode.h"
-#include "Core/Containers/Array.h"
 
 // Forward Declarations
 //------------------------------------------------------------------------------
+class Function;
 
 // TestNode
 //------------------------------------------------------------------------------
 class TestNode : public FileNode
 {
+    REFLECT_NODE_DECLARE( TestNode )
 public:
-	explicit TestNode( const AString & testOutput,
-					   FileNode * testExecutable,
-					   const AString & m_Arguments,
-					   const AString & m_WorkingDir );
-	virtual ~TestNode();
+    TestNode();
+    virtual bool Initialize( NodeGraph & nodeGraph, const BFFToken * iter, const Function * function ) override;
+    virtual ~TestNode() override;
 
-	static inline Node::Type GetTypeS() { return Node::TEST_NODE; }
+    static inline Node::Type GetTypeS() { return Node::TEST_NODE; }
 
-	virtual void Save( IOStream & stream ) const;
-	static Node * Load( IOStream & stream );
+    inline const Node* GetTestExecutable() const { return m_StaticDependencies[0].GetNode(); }
+    const char * GetEnvironmentString() const;
+
 private:
-	virtual BuildResult DoBuild( Job * job );
+    virtual bool DoDynamicDependencies( NodeGraph & nodeGraph, bool forceClean ) override;
+    virtual BuildResult DoBuild( Job * job ) override;
 
-	void EmitCompilationMessage( const char * workingDir ) const;
+    void EmitCompilationMessage( const char * workingDir ) const;
 
-	FileNode * m_Executable;
-	AString		m_Arguments;
-	AString		m_WorkingDir;
+    AString             m_TestExecutable;
+    Array< AString >    m_TestInput;
+    Array< AString >    m_TestInputPath;
+    Array< AString >    m_TestInputPattern;
+    Array< AString >    m_TestInputExcludePath;
+    Array< AString >    m_TestInputExcludedFiles;
+    Array< AString >    m_TestInputExcludePattern;
+    AString             m_TestArguments;
+    AString             m_TestWorkingDir;
+    uint32_t            m_TestTimeOut;
+    bool                m_TestAlwaysShowOutput;
+    bool                m_TestInputPathRecurse;
+    Array< AString >    m_PreBuildDependencyNames;
+    Array< AString >    m_Environment;
+
+    // Internal State
+    uint32_t            m_NumTestInputFiles;
+    mutable const char * m_EnvironmentString;
 };
 
 //------------------------------------------------------------------------------
-#endif // FBUILD_GRAPH_TESTNODE_H

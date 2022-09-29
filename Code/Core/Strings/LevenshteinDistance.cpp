@@ -3,8 +3,6 @@
 
 // Includes
 //------------------------------------------------------------------------------
-#include "Core/PrecompiledHeader.h"
-
 #include "LevenshteinDistance.h"
 #include "AString.h"
 
@@ -15,7 +13,7 @@
 //------------------------------------------------------------------------------
 namespace
 {
-    template < bool _CaseSentitive >
+    template<bool CASE_SENSITIVE>
     struct CharEqual
     {
         bool operator ()( char lhs, char rhs ) const
@@ -39,9 +37,9 @@ namespace
 // Levenshtein distance
 // https://en.wikibooks.org/wiki/Algorithm_Implementation/Strings/Levenshtein_distance#C
 //------------------------------------------------------------------------------
-template < size_t _Capacity, bool _CaseSentitive >
-static uint32_t LevenshteinDistanceImpl(const char * str1, uint32_t len1,
-                                        const char * str2, uint32_t len2 )
+template<size_t CAPACITY, bool CASE_SENSITIVE>
+static uint32_t LevenshteinDistanceImpl( const char * str1, uint32_t len1,
+                                         const char * str2, uint32_t len2 )
 {
     ASSERT( 0 == len1 || nullptr != str1 );
     ASSERT( 0 == len2 || nullptr != str2 );
@@ -60,28 +58,28 @@ static uint32_t LevenshteinDistanceImpl(const char * str1, uint32_t len1,
         len2 = lenTmp;
     }
 
-    if ( len1 >= _Capacity )
+    if ( len1 >= CAPACITY )
     {
         ASSERT( false );
         return len2;
     }
 
-    uint32_t column[_Capacity] = { 0 };
+    uint32_t column[ CAPACITY ] = { 0 };
 
     for ( uint32_t y = 1 ; y <= len1; y++ )
-        column[y] = y;
+        column[ y ] = y;
 
     for ( uint32_t x = 1 ; x <= len2; x++ )
     {
-        column[0] = x;
+        column[ 0 ] = x;
         for ( uint32_t y = 1, lastdiag = x - 1 ; y <= len1 ; y++ )
         {
-            const uint32_t olddiag = column[y];
+            const uint32_t olddiag = column[ y ];
 
             const uint32_t a = column[y] + 1;
             const uint32_t b = column[y - 1] + 1;
-            const uint32_t c = lastdiag + ( CharEqual< _CaseSentitive >()( str1[y - 1], str2[x - 1] ) ? 0 : 1 );
-            column[y] = ( ( a < b ) ? ( a < c ? a : c ) : ( b < c ? b : c ) );
+            const uint32_t c = lastdiag + ( CharEqual<CASE_SENSITIVE>()( str1[y - 1], str2[x - 1] ) ? 0 : 1 );
+            column[ y ] = ( ( a < b ) ? ( a < c ? a : c ) : ( b < c ? b : c ) );
 
             lastdiag = olddiag;
         }
@@ -94,8 +92,8 @@ static uint32_t LevenshteinDistanceImpl(const char * str1, uint32_t len1,
 //------------------------------------------------------------------------------
 /*static*/ uint32_t LevenshteinDistance::Distance( const char * lhs, const char * rhs )
 {
-    const uint32_t lhsLen = ( nullptr == lhs ) ? 0 : ( uint32_t ) AString::StrLen( lhs );
-    const uint32_t rhsLen = ( nullptr == rhs ) ? 0 : ( uint32_t ) AString::StrLen( rhs );
+    const uint32_t lhsLen = ( nullptr == lhs ) ? 0 : (uint32_t)AString::StrLen( lhs );
+    const uint32_t rhsLen = ( nullptr == rhs ) ? 0 : (uint32_t)AString::StrLen( rhs );
     return ::LevenshteinDistanceImpl< 1024, true >( lhs, lhsLen, rhs, rhsLen );
 }
 
@@ -110,8 +108,8 @@ static uint32_t LevenshteinDistanceImpl(const char * str1, uint32_t len1,
 //------------------------------------------------------------------------------
 /*static*/ uint32_t LevenshteinDistance::DistanceI( const char * lhs, const char * rhs )
 {
-    const uint32_t lhsLen = ( nullptr == lhs ) ? 0 : ( uint32_t ) AString::StrLen( lhs );
-    const uint32_t rhsLen = ( nullptr == rhs ) ? 0 : ( uint32_t ) AString::StrLen( rhs );
+    const uint32_t lhsLen = ( nullptr == lhs ) ? 0 : (uint32_t)AString::StrLen( lhs );
+    const uint32_t rhsLen = ( nullptr == rhs ) ? 0 : (uint32_t)AString::StrLen( rhs );
     return ::LevenshteinDistanceImpl< 1024, false >( lhs, lhsLen, rhs, rhsLen );
 }
 

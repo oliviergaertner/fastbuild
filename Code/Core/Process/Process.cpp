@@ -3,24 +3,29 @@
 
 // Includes
 //------------------------------------------------------------------------------
-#include "Core/PrecompiledHeader.h"
-
 #include "Process.h"
 
 #include "Core/Env/Assert.h"
 #include "Core/FileIO/FileIO.h"
+#include "Core/Math/Constants.h"
 #include "Core/Math/Conversions.h"
+#include "Core/Process/Atomic.h"
 #include "Core/Process/Thread.h"
+#include "Core/Profile/Profile.h"
 #include "Core/Strings/AStackString.h"
 #include "Core/Strings/AString.h"
+#include "Core/Time/Timer.h"
+#include "Core/Tracing/Tracing.h"
 
 #if defined( __WINDOWS__ )
-    #include <windows.h>
+    #include "Core/Env/WindowsHeader.h"
+    #include <TlHelp32.h>
 #endif
 
 #if defined( __LINUX__ ) || defined( __APPLE__ )
     #include <errno.h>
     #include <fcntl.h>
+    #include <signal.h>
     #include <stdio.h>
     #include <stdlib.h>
     #include <string.h>
@@ -28,22 +33,28 @@
     #include <unistd.h>
 #endif
 
+// Static Data
+//------------------------------------------------------------------------------
+
 // CONSTRUCTOR
 //------------------------------------------------------------------------------
-Process::Process()
-: m_Started( false )
+Process::Process( const volatile bool * mainAbortFlag,
+                  const volatile bool * abortFlag )
+    : m_Started( false )
 #if defined( __WINDOWS__ )
-	, m_SharingHandles( false )
-	, m_RedirectHandles( true )
-    , m_StdOutRead( nullptr )
-    , m_StdOutWrite( nullptr )
-    , m_StdErrRead( nullptr )
-    , m_StdErrWrite( nullptr )
+    , m_SharingHandles( false )
+    , m_RedirectHandles( true )
+    , m_StdOutRead( INVALID_HANDLE_VALUE )
+    , m_StdErrRead( INVALID_HANDLE_VALUE )
+    , m_StdInWrite( INVALID_HANDLE_VALUE )
 #endif
 #if defined( __LINUX__ ) || defined( __APPLE__ )
     , m_ChildPID( -1 )
     , m_HasAlreadyWaitTerminated( false )
 #endif
+    , m_HasAborted( false )
+    , m_MainAbortFlag( mainAbortFlag )
+    , m_AbortFlag( abortFlag )
 {
     #if defined( __WINDOWS__ )
         static_assert( sizeof( m_ProcessInfo ) == sizeof( PROCESS_INFORMATION ), "Unexpected sizeof(PROCESS_INFORMATION)" );
@@ -54,108 +65,281 @@ Process::Process()
 //------------------------------------------------------------------------------
 Process::~Process()
 {
-	if ( m_Started )
-	{
-		WaitForExit();
-	}
+    if ( m_Started )
+    {
+        WaitForExit();
+    }
+}
+
+// KillProcessTreeInternal
+//------------------------------------------------------------------------------
+#if defined( __WINDOWS__ )
+    void Process::KillProcessTreeInternal( const void * hProc, const uint32_t processID, const uint64_t processCreationTime )
+    {
+        PROCESSENTRY32 pe;
+
+        memset( &pe, 0, sizeof( PROCESSENTRY32) );
+        pe.dwSize = sizeof( PROCESSENTRY32 );
+
+        const HANDLE hSnap = ::CreateToolhelp32Snapshot( TH32CS_SNAPPROCESS, 0 );
+
+        if ( ::Process32First( hSnap, &pe ) )
+        {
+            // find child processes
+            do
+            {
+                // Ignore any process that is not a child
+                if ( pe.th32ParentProcessID != processID )
+                {
+                    continue;
+                }
+
+                // Handle pid re-use by ensuring process started after parent
+                const uint32_t childProcessId = pe.th32ProcessID;
+                const HANDLE hChildProc = ::OpenProcess( PROCESS_ALL_ACCESS, FALSE, childProcessId );
+                if ( hChildProc )
+                {
+                    const uint64_t childProcessCreationTime = GetProcessCreationTime( hChildProc );
+                    if ( childProcessCreationTime < processCreationTime )
+                    {
+                        ::CloseHandle( hChildProc );
+                        continue; // Cannot be a child because it was created before the parent
+                    }
+
+                    // We should never see the main process because that's handled above
+                    ASSERT( childProcessId != GetCurrentProcessId() );
+
+                    // Recursion
+                    KillProcessTreeInternal( hChildProc, childProcessId, childProcessCreationTime );
+
+                    ::CloseHandle( hChildProc );
+                }
+            }
+            while ( ::Process32Next( hSnap, &pe ) );
+        }
+
+        ::CloseHandle( hSnap );
+
+        // kill this process on the way back up the recursion
+        ::TerminateProcess( (HANDLE)hProc, 1 );
+    }
+#endif
+
+// GetProcessStartTime
+//------------------------------------------------------------------------------
+#if defined( __WINDOWS__ )
+    /*static*/ uint64_t Process::GetProcessCreationTime( const void * hProc )
+    {
+        if ( hProc == nullptr )
+        {
+            return 0;
+        }
+
+        // Get process start time
+        FILETIME creationFileTime, unused;
+        VERIFY( GetProcessTimes( (HANDLE)hProc, &creationFileTime, &unused, &unused, &unused ) );
+
+        // Return start time in a more convenient format
+        const uint64_t childProcessCreationTime = ( (uint64_t)creationFileTime.dwHighDateTime << 32 ) | creationFileTime.dwLowDateTime;
+        return childProcessCreationTime;
+    }
+#endif
+
+// KillProcessTree
+//------------------------------------------------------------------------------
+void Process::KillProcessTree()
+{
+    #if defined( __WINDOWS__ )
+        const uint32_t childProcessId = GetProcessInfo().dwProcessId;
+        const HANDLE hChildProc = ::OpenProcess( PROCESS_ALL_ACCESS, FALSE, childProcessId );
+        if ( hChildProc )
+        {
+            KillProcessTreeInternal( hChildProc, childProcessId, GetProcessCreationTime( hChildProc ) );
+            ::CloseHandle( hChildProc );
+        }
+    #elif defined( __LINUX__ ) || defined( __APPLE__ )
+        // Kill all processes in the process group of the child process.
+        kill( -m_ChildPID, SIGKILL );
+    #else
+        #error Unknown platform
+    #endif
 }
 
 // Spawn
 //------------------------------------------------------------------------------
 bool Process::Spawn( const char * executable,
-					 const char * args,
-					 const char * workingDir,
-					 const char * environment,
-					 bool shareHandles )
+                     const char * args,
+                     const char * workingDir,
+                     const char * environment,
+                     bool shareHandles )
 {
-	ASSERT( !m_Started );
-	ASSERT( executable );
+    PROFILE_FUNCTION;
+
+    ASSERT( !m_Started );
+    ASSERT( executable );
+
+    if ( m_MainAbortFlag && AtomicLoadRelaxed( m_MainAbortFlag ) )
+    {
+        // Once main process has aborted, we no longer permit spawning sub-processes.
+        return false;
+    }
 
     #if defined( __WINDOWS__ )
         // Set up the start up info struct.
         STARTUPINFO si;
         ZeroMemory( &si, sizeof(STARTUPINFO) );
-		si.cb = sizeof( STARTUPINFO );
+        si.cb = sizeof( STARTUPINFO );
         si.dwFlags |= STARTF_USESHOWWINDOW;
         si.wShowWindow = SW_HIDE;
-        
+
         SECURITY_ATTRIBUTES sa;
         ZeroMemory( &sa, sizeof( SECURITY_ATTRIBUTES ) );
         sa.nLength = sizeof(SECURITY_ATTRIBUTES);
         sa.bInheritHandle = TRUE;
         sa.lpSecurityDescriptor = nullptr;
 
-		m_SharingHandles = shareHandles;
+        m_SharingHandles = shareHandles;
 
-		if ( m_RedirectHandles )
-		{
-			// create the pipes
-			if ( shareHandles )
-			{
-				si.hStdOutput = GetStdHandle(STD_OUTPUT_HANDLE);
-				si.hStdError = GetStdHandle(STD_ERROR_HANDLE);
-				si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
-			}
-			else
-			{
-				if ( ! CreatePipe( &m_StdOutRead, &m_StdOutWrite, &sa, MEGABYTE ) )
-				{
-					return false;
-				}
-				SetHandleInformation( m_StdOutRead, HANDLE_FLAG_INHERIT, 0 );
+        if ( m_RedirectHandles )
+        {
+            // create the pipes
+            if ( shareHandles )
+            {
+                si.hStdOutput = GetStdHandle(STD_OUTPUT_HANDLE);
+                si.hStdError = GetStdHandle(STD_ERROR_HANDLE);
+                si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+            }
+            else
+            {
+                HANDLE stdOutWrite = INVALID_HANDLE_VALUE;
+                HANDLE stdErrWrite = INVALID_HANDLE_VALUE;
+                HANDLE stdInRead = INVALID_HANDLE_VALUE;
 
-				if ( ! CreatePipe( &m_StdErrRead, &m_StdErrWrite, &sa, MEGABYTE ) )
-				{
-					VERIFY( CloseHandle( m_StdOutRead ) );
-					VERIFY( CloseHandle( m_StdOutWrite ) );
-					return false;
-				}
-				SetHandleInformation( m_StdErrRead, HANDLE_FLAG_INHERIT, 0 );
+                bool ok = true;
+                ok = ok && CreatePipe( &m_StdOutRead, &stdOutWrite, &sa, MEGABYTE );
+                ok = ok && CreatePipe( &m_StdErrRead, &stdErrWrite, &sa, MEGABYTE );
+                ok = ok && CreatePipe( &stdInRead, &m_StdInWrite, &sa, MEGABYTE );
 
-				si.hStdOutput = m_StdOutWrite;
-				si.hStdError = m_StdErrWrite;
-				si.hStdInput = GetStdHandle(STD_INPUT_HANDLE); // m_StdInRead;
-			}
-			si.dwFlags |= STARTF_USESTDHANDLES;
-		}
-        
+                // Handle failure
+                if ( !ok )
+                {
+                    if ( m_StdOutRead != INVALID_HANDLE_VALUE ) { ::CloseHandle( m_StdOutRead ); }
+                    if ( m_StdErrRead != INVALID_HANDLE_VALUE ) { ::CloseHandle( m_StdErrRead ); }
+                    if ( m_StdInWrite != INVALID_HANDLE_VALUE ) { ::CloseHandle( m_StdInWrite ); }
+                    if ( stdOutWrite != INVALID_HANDLE_VALUE ) { ::CloseHandle( stdOutWrite ); }
+                    if ( stdErrWrite != INVALID_HANDLE_VALUE ) { ::CloseHandle( stdErrWrite ); }
+                    if ( stdInRead != INVALID_HANDLE_VALUE ) { ::CloseHandle( stdInRead ); }
+                    return false;
+                }
+
+                // Prevent child inheriting handles, to avoid deadlocks
+                VERIFY( SetHandleInformation( m_StdOutRead, HANDLE_FLAG_INHERIT, 0 ) );
+                VERIFY( SetHandleInformation( m_StdErrRead, HANDLE_FLAG_INHERIT, 0 ) );
+                VERIFY( SetHandleInformation( m_StdInWrite, HANDLE_FLAG_INHERIT, 0 ) );
+
+                si.hStdOutput = stdOutWrite;
+                si.hStdError = stdErrWrite;
+                si.hStdInput = stdInRead;
+            }
+            si.dwFlags |= STARTF_USESTDHANDLES;
+        }
+
         // Make sure the first arg is the executable
         // We also need to make a copy, as CreateProcess can write back to this string
         AStackString< 1024 > fullArgs;
         fullArgs += '\"';
         fullArgs += executable;
         fullArgs += '\"';
-		if ( args )
-		{
-	        fullArgs += ' ';
-	        fullArgs += args;
-		}
-        //fullArgs.Format( "\"%s\" %s", executable, args );
+        if ( args )
+        {
+            fullArgs += ' ';
+            fullArgs += args;
+        }
 
         // create the child
+        PRAGMA_DISABLE_PUSH_MSVC( 6335 ) // False positive: Leaking process information handle '%s'
         if ( !CreateProcess( nullptr, //executable,
-                              fullArgs.Get(),
-                              nullptr,
-                              nullptr,
-                              (BOOL)m_RedirectHandles, // inherit handles
-                              0,
-                              (void *)environment,
-                              workingDir,
-                              &si,
-                              (LPPROCESS_INFORMATION)&m_ProcessInfo ) )
+                             fullArgs.Get(),
+                             nullptr,
+                             nullptr,
+                             (BOOL)m_RedirectHandles, // inherit handles
+                             0,
+                             (void *)environment,
+                             workingDir,
+                             &si,
+                             (LPPROCESS_INFORMATION)&m_ProcessInfo ) )
         {
             return false;
+        }
+        PRAGMA_DISABLE_POP_MSVC // 6335
+
+        if ( m_RedirectHandles && !shareHandles )
+        {
+            // Close the "other" end of the pipes to avoid deadlocks
+            ::CloseHandle( si.hStdOutput );
+            ::CloseHandle( si.hStdError );
+            ::CloseHandle( si.hStdInput );
         }
 
         m_Started = true;
         return true;
-	#elif defined( __LINUX__ ) || defined( __APPLE__ )
+    #elif defined( __LINUX__ ) || defined( __APPLE__ )
+        (void)shareHandles; // unsupported
+
         // create StdOut and StdErr pipes to capture output of spawned process
-        int stdOutPipeFDs[ 2 ]; 
+        int stdOutPipeFDs[ 2 ];
         int stdErrPipeFDs[ 2 ];
         VERIFY( pipe( stdOutPipeFDs ) == 0 );
-        VERIFY( pipe( stdErrPipeFDs ) == 0 );     
-            
+        VERIFY( pipe( stdErrPipeFDs ) == 0 );
+
+        // Increase buffer sizes to reduce stalls
+        #if defined( __LINUX__ )
+            // On systems with many CPU cores, this can fail due to per-process
+            // limits being reached, so consider this a hint only.
+            // (We only increase the size of the stdout to avoid "wasting" memory
+            // accelerating the stderr, which is the uncommon case to write to)
+            fcntl( stdOutPipeFDs[ 1 ], F_SETPIPE_SZ, ( 512 * 1024 ) );
+        #endif
+
+        // prepare args
+        Array< AString > splitArgs( 64, true );
+        Array< const char * > argVector( 64, true );
+        argVector.Append( executable ); // first arg is exe name
+        if ( args )
+        {
+            // Tokenize
+            AStackString<> argCopy( args );
+            argCopy.Tokenize( splitArgs );
+
+            // Build Vector
+            for ( AString & arg : splitArgs )
+            {
+                if ( arg.BeginsWith( '"' ) && arg.EndsWith( '"' ) )
+                {
+                    // strip quotes
+                    arg.SetLength( arg.GetLength() - 1 ); // trim end quote
+                    argVector.Append( arg.Get() + 1 ); // skip start quote
+                    continue;
+                }
+                argVector.Append( arg.Get() ); // leave arg as-is
+            }
+        }
+        argVector.Append( nullptr ); // argv must have be nullptr terminated
+
+        // prepare environment
+        Array< const char* > envVector( 8, true );
+        if ( environment )
+        {
+            // Iterate double-null terminated string vector
+            while( *environment != 0 )
+            {
+                envVector.Append( environment );
+                environment += strlen( environment );
+                environment += 1; // skip null terminator for string
+            }
+        }
+        envVector.Append( nullptr ); // env must be terminated with a nullptr
+
         // fork the process
         const pid_t childProcessPid = fork();
         if ( childProcessPid == -1 )
@@ -165,14 +349,19 @@ bool Process::Spawn( const char * executable,
             VERIFY( close( stdOutPipeFDs[ 1 ] ) == 0 );
             VERIFY( close( stdErrPipeFDs[ 0 ] ) == 0 );
             VERIFY( close( stdErrPipeFDs[ 1 ] ) == 0 );
-            
+
             ASSERT( false ); // fork failed - should not happen in normal operation
             return false;
         }
-       
-        const bool isChild = ( childProcessPid == 0 );        
+
+        const bool isChild = ( childProcessPid == 0 );
         if ( isChild )
         {
+            // Put child process into its own process group.
+            // This will allow as to send signals to the whole group which we use to implement KillProcessTree.
+            // The new process group will have ID equal to the PID of the child process.
+            VERIFY( setpgid( 0, 0 ) == 0 );
+
             VERIFY( dup2( stdOutPipeFDs[ 1 ], STDOUT_FILENO ) != -1 );
             VERIFY( dup2( stdErrPipeFDs[ 1 ], STDERR_FILENO ) != -1 );
 
@@ -183,54 +372,21 @@ bool Process::Spawn( const char * executable,
 
             if ( workingDir )
             {
-                FileIO::SetCurrentDir( AStackString<>( workingDir ) );
+                VERIFY( chdir( workingDir ) == 0 );
             }
-            
+
+            // transfer execution to new executable
+            char * const * argV = (char * const *)argVector.Begin();
             if ( environment )
             {
-                #if !defined( __APPLE__ )
-                    VERIFY( clearenv() == 0 ); // TODO:MAC Fix missing clearenv()
-                #endif
-                
-                // Iterate double-null terminated string vector
-                while( *environment != 0 )
-                {
-                    const char * equals = strchr( environment, '=' );
-                    ASSERT(equals);
-                    AStackString<> name( environment, equals );
-                    AStackString<> value( equals + 1 );
-                    environment = equals + 1; // skip name and equals
-                    environment += value.GetLength() + 1; // skip null terminator for sting
-                    VERIFY( setenv(name.Get(), value.Get(), 1) == 0 );
-                }
+                char * const * envV = (char * const *)envVector.Begin();
+                execve( executable, argV, envV );
             }
-
-            // split args
-            AString fullArgs( args ? args : "" );
-            Array< AString > splitArgs( 64, true );
-            fullArgs.Tokenize( splitArgs );
-
-            // prepare args
-            const size_t numArgs = splitArgs.GetSize();
-            char ** argv = FNEW( char *[ numArgs + 2 ] );
-            argv[ 0 ] = const_cast< char * >( executable );
-            for ( size_t i=0; i<numArgs; ++i )
+            else
             {
-                AString & thisArg = splitArgs[ i ];
-				if ( thisArg.BeginsWith( '"' ) && thisArg.EndsWith( '"' ) )
-				{
-					// strip quotes
-					thisArg.SetLength( thisArg.GetLength() - 1 ); // trim end quote
-	                argv[ i + 1 ] = thisArg.Get() + 1; // skip start quote
-					continue;
-				}
-                argv[ i + 1 ] = thisArg.Get(); // leave arg as-is
+                execv( executable, argV );
             }
-            argv[ numArgs + 1 ] = nullptr;                      
-                                    
-            // transfer execution to new executable
-            execv( executable, argv );
-            
+
             exit( -1 ); // only get here if execv fails
         }
         else
@@ -243,7 +399,7 @@ bool Process::Spawn( const char * executable,
             m_StdOutRead = stdOutPipeFDs[ 0 ];
             m_StdErrRead = stdErrPipeFDs[ 0 ];
             m_ChildPID = (int)childProcessPid;
-            
+
             // TODO: How can we tell if child spawn failed?
             m_Started = true;
             m_HasAlreadyWaitTerminated = false;
@@ -258,26 +414,22 @@ bool Process::Spawn( const char * executable,
 //----------------------------------------------------------
 bool Process::IsRunning() const
 {
-	ASSERT( m_Started );
+    ASSERT( m_Started );
 
     #if defined( __WINDOWS__ )
         switch ( WaitForSingleObject( GetProcessInfo().hProcess, 0 ) )
         {
-            case WAIT_OBJECT_0:
-                return false;
-
-            case WAIT_TIMEOUT:
-                return true;
+            case WAIT_OBJECT_0: return false;
+            case WAIT_TIMEOUT:  return true;
+            default:            ASSERT( false ); return false; // we should never get here
         }
-        ASSERT( false ); // we should never get here
-        return false;
-	#elif defined( __LINUX__ ) || defined( __APPLE__ )
+    #elif defined( __LINUX__ ) || defined( __APPLE__ )
         // already waited?
         if ( m_HasAlreadyWaitTerminated )
         {
             return false;
         }
-        
+
         // non-blocking "wait"
         int status( -1 );
         pid_t result = waitpid( m_ChildPID, &status, WNOHANG );
@@ -286,10 +438,25 @@ bool Process::IsRunning() const
         {
             return true; // Still running
         }
-        
+
         // store wait result: can't call again if we just cleaned up process
         ASSERT( result == m_ChildPID );
-        m_ReturnStatus = WEXITSTATUS(status);
+        if ( WIFEXITED( status ) )
+        {
+            m_ReturnStatus = WEXITSTATUS( status ); // process terminated normally, use exit code
+        }
+        else if ( WIFSIGNALED( status ) )
+        {
+            m_ReturnStatus = -( WTERMSIG( status ) ); // process was terminated by a signal, use negative signal value
+        }
+        else if ( WIFSTOPPED( status ) )
+        {
+            return true; // process was stopped, it is not terminated yet
+        }
+        else
+        {
+            m_ReturnStatus = status; // some other unexpected state change, treat it as a failure
+        }
         m_HasAlreadyWaitTerminated = true;
         return false; // no longer running
     #else
@@ -299,33 +466,38 @@ bool Process::IsRunning() const
 
 // WaitForExit
 //------------------------------------------------------------------------------
-int Process::WaitForExit()
+int32_t Process::WaitForExit()
 {
-	ASSERT( m_Started );
-	m_Started = false;
+    ASSERT( m_Started );
+    m_Started = false;
 
     #if defined( __WINDOWS__ )
-        // wait for it to finish
-        VERIFY( WaitForSingleObject( GetProcessInfo().hProcess, INFINITE ) == WAIT_OBJECT_0 );
 
-        // get the result code
         DWORD exitCode = 0;
-        VERIFY( GetExitCodeProcess( GetProcessInfo().hProcess, (LPDWORD)&exitCode ) );
+
+        if ( m_HasAborted == false )
+        {
+            // Don't wait if using jobs and the process has been aborted.
+            // It will be killed along with the fbuild process if the TerminateProcess has failed for any reason and
+            // it is useless to wait for it was anyways we are reporting a failing exit code.
+            // Also, This accelerate further more the cancellation.
+
+            // wait for it to finish
+            VERIFY( WaitForSingleObject( GetProcessInfo().hProcess, INFINITE ) == WAIT_OBJECT_0 );
+
+            // get the result code
+            VERIFY( GetExitCodeProcess( GetProcessInfo().hProcess, (LPDWORD)&exitCode ) );
+        }
 
         // cleanup
-        VERIFY( CloseHandle( GetProcessInfo().hProcess ) );
-        VERIFY( CloseHandle( GetProcessInfo().hThread ) );
+        VERIFY( ::CloseHandle( m_StdOutRead ) );
+        VERIFY( ::CloseHandle( m_StdErrRead ) );
+        VERIFY( ::CloseHandle( m_StdInWrite ) );
+        VERIFY( ::CloseHandle( GetProcessInfo().hProcess ) );
+        VERIFY( ::CloseHandle( GetProcessInfo().hThread ) );
 
-		if ( !m_SharingHandles && m_RedirectHandles )
-		{
-        	VERIFY( CloseHandle( m_StdOutRead ) );
-        	VERIFY( CloseHandle( m_StdOutWrite ) );
-    	    VERIFY( CloseHandle( m_StdErrRead ) );
-	        VERIFY( CloseHandle( m_StdErrWrite ) );
-		}
-
-        return exitCode;
-	#elif defined( __LINUX__ ) || defined( __APPLE__ )
+        return (int32_t)exitCode;
+    #elif defined( __LINUX__ ) || defined( __APPLE__ )
         VERIFY( close( m_StdOutRead ) == 0 );
         VERIFY( close( m_StdErrRead ) == 0 );
         if ( m_HasAlreadyWaitTerminated == false )
@@ -343,10 +515,26 @@ int Process::WaitForExit()
                     ASSERT( false ); // Usage error
                 }
                 ASSERT( ret == m_ChildPID );
-                m_ReturnStatus = WEXITSTATUS(status);
+                if ( WIFEXITED( status ) )
+                {
+                    m_ReturnStatus = WEXITSTATUS( status ); // process terminated normally, use exit code
+                }
+                else if ( WIFSIGNALED( status ) )
+                {
+                    m_ReturnStatus = -( WTERMSIG( status ) ); // process was terminated by a signal, use negative signal value
+                }
+                else if ( WIFSTOPPED( status ) )
+                {
+                    continue; // process was stopped, keep waiting for termination
+                }
+                else
+                {
+                    m_ReturnStatus = status; // some other unexpected state change, treat it as a failure
+                }
                 break;
             }
         }
+
         return m_ReturnStatus;
     #else
         #error Unknown platform
@@ -357,21 +545,16 @@ int Process::WaitForExit()
 //------------------------------------------------------------------------------
 void Process::Detach()
 {
-	ASSERT( m_Started );
-	m_Started = false;
+    ASSERT( m_Started );
+    m_Started = false;
 
     #if defined( __WINDOWS__ )
         // cleanup
-        VERIFY( CloseHandle( GetProcessInfo().hProcess ) );
-        VERIFY( CloseHandle( GetProcessInfo().hThread ) );
-
-		if ( !m_SharingHandles && m_RedirectHandles )
-		{
-        	VERIFY( CloseHandle( m_StdOutRead ) );
-        	VERIFY( CloseHandle( m_StdOutWrite ) );
-    	    VERIFY( CloseHandle( m_StdErrRead ) );
-	        VERIFY( CloseHandle( m_StdErrWrite ) );
-		}
+        if ( m_StdOutRead != INVALID_HANDLE_VALUE ) { ::CloseHandle( m_StdOutRead ); }
+        if ( m_StdErrRead != INVALID_HANDLE_VALUE ) { ::CloseHandle( m_StdErrRead ); }
+        if ( m_StdInWrite != INVALID_HANDLE_VALUE ) { ::CloseHandle( m_StdInWrite ); }
+        VERIFY( ::CloseHandle( GetProcessInfo().hProcess ) );
+        VERIFY( ::CloseHandle( GetProcessInfo().hThread ) );
     #elif defined( __APPLE__ )
         // TODO:MAC Implement Process
     #elif defined( __LINUX__ )
@@ -383,38 +566,97 @@ void Process::Detach()
 
 // ReadAllData
 //------------------------------------------------------------------------------
-void Process::ReadAllData( AutoPtr< char > & outMem, uint32_t * outMemSize,
-						   AutoPtr< char > & errMem, uint32_t * errMemSize )
+bool Process::ReadAllData( AString & outMem,
+                           AString & errMem,
+                           uint32_t timeOutMS )
 {
-    // we'll capture into these growing buffers
-    uint32_t outSize = 0;
-    uint32_t errSize = 0;
-    uint32_t outBufferSize = 0;
-    uint32_t errBufferSize = 0;
+    const Timer t;
+
+    #if defined( __LINUX__ )
+        // Start with a short sleep interval to allow rapid termination of
+        // short-lived processes. The timeout increases during periods of
+        // no output and reset when receiving output to balance responsiveness
+        // with overhead.
+        uint32_t sleepIntervalMS = 1;
+    #endif
 
     bool processExited = false;
     for ( ;; )
     {
-        uint32_t prevOutSize = outSize;
-        uint32_t prevErrSize = errSize;
-        Read( m_StdOutRead, outMem, outSize, outBufferSize );
-        Read( m_StdErrRead, errMem, errSize, errBufferSize );
+        const bool mainAbort = ( m_MainAbortFlag && AtomicLoadRelaxed( m_MainAbortFlag ) );
+        const bool abort = ( m_AbortFlag && AtomicLoadRelaxed( m_AbortFlag ) );
+        if ( abort || mainAbort )
+        {
+            PROFILE_SECTION( "Abort" );
+            KillProcessTree();
+            m_HasAborted = true;
+            break;
+        }
+
+        const uint32_t prevOutSize = outMem.GetLength();
+        const uint32_t prevErrSize = errMem.GetLength();
+        Read( m_StdOutRead, outMem );
+        Read( m_StdErrRead, errMem );
 
         // did we get some data?
-        if ( ( prevOutSize != outSize ) || ( prevErrSize != errSize ) )
-        {				
+        if ( ( prevOutSize != outMem.GetLength() ) || ( prevErrSize != errMem.GetLength() ) )
+        {
+            #if defined( __LINUX__ )
+                // Reset sleep interval            
+                sleepIntervalMS = 1;
+            #endif
             continue; // try reading again right away incase there is more
         }
 
         // nothing to read right now
-        if ( IsRunning() )
-        {
-            // no data available, but process is still going, so wait
-            // TODO:C Replace this sleep with event-based wait
-            // (tricky to do on Windows since unnamed pipes are not waitable :(
-            Thread::Sleep( 15 );
-            continue;
-        }
+        #if defined( __WINDOWS__ )
+            if ( processExited == false )
+            {
+                const DWORD result = WaitForSingleObject( GetProcessInfo().hProcess, 15 );
+                if ( result == WAIT_TIMEOUT )
+                {
+                    // Check if timeout is hit
+                    if ( ( timeOutMS > 0 ) && ( t.GetElapsedMS() >= (float)timeOutMS ) )
+                    {
+                        Terminate();
+                        return false; // Timed out
+                    }
+
+                    continue; // still running - try to read
+                }
+                else
+                {
+                    // exited - will do one more read
+                    ASSERT( result == WAIT_OBJECT_0 );
+                }
+            }
+        #else
+            if ( IsRunning() )
+            {
+                // Check if timeout is hit
+                if ( ( timeOutMS > 0 ) && ( t.GetElapsedMS() >= timeOutMS ) )
+                {
+                    Terminate();
+                    return false; // Timed out
+                }
+
+                // no data available, but process is still going, so wait
+                #if defined( __OSX__ )
+                    // On OSX there seems to be no way to set the pipe bufffer
+                    // size so we must instead wake up frequently to avoid the
+                    // writer being blocked.
+                    Thread::Sleep( 2 );
+                #else
+                    // TODO:C Investigate waiting on an event when process terminates
+                    // to reduce overall process spawn time
+                    Thread::Sleep( sleepIntervalMS );
+
+                    // Increase sleep interval upto limit
+                    sleepIntervalMS = Math::Min<uint32_t>( sleepIntervalMS * 2, 8 );
+                #endif
+                continue;
+            }
+        #endif
 
         // process exited - is this the first time to this point?
         if ( processExited == false )
@@ -426,60 +668,44 @@ void Process::ReadAllData( AutoPtr< char > & outMem, uint32_t * outMemSize,
         break; // all done
     }
 
-    // if owner asks for pointers, they now own the mem
-    if ( outMemSize ) { *outMemSize = outSize; }
-    if ( errMemSize ) { *errMemSize = errSize; }
+    return true;
 }
 
 // Read
 //------------------------------------------------------------------------------
 #if defined( __WINDOWS__ )
-    void Process::Read( HANDLE handle, AutoPtr< char > & buffer, uint32_t & sizeSoFar, uint32_t & bufferSize )
+    void Process::Read( HANDLE handle, AString & buffer )
     {
         // anything available?
         DWORD bytesAvail( 0 );
         if ( !::PeekNamedPipe( handle, nullptr, 0, nullptr, (LPDWORD)&bytesAvail, nullptr ) )
-		{
-			return;
-		}
+        {
+            return;
+        }
         if ( bytesAvail == 0 )
         {
             return;
         }
 
-        // will it fit in the buffer we have?
-        if ( ( sizeSoFar + bytesAvail ) > bufferSize )
+        // Will data fit in existing buffer?
+        const uint32_t sizeSoFar = buffer.GetLength();
+        const uint32_t newSize = ( sizeSoFar + bytesAvail );
+        if ( newSize > buffer.GetReserved() )
         {
-            // no - allocate a bigger buffer (also handles the first time with no buffer)
-
-            // TODO:B look at a new container type (like a linked list of 1mb buffers) to avoid the wasteage here
-            // The caller has to take a copy to avoid the overhead if they want to hang onto the data
-            // grow buffer in at least 16MB chunks, to prevent future reallocations
-            uint32_t newBufferSize = Math::Max< uint32_t >( sizeSoFar + bytesAvail, bufferSize + ( 16 * MEGABYTE ) );
-            char * newBuffer = (char *)ALLOC( newBufferSize + 1 ); // +1 so we can always add a null char
-            if ( buffer.Get() )
-            {
-                // transfer and free old buffer
-                memcpy( newBuffer, buffer.Get(), sizeSoFar );
-            }
-            buffer = newBuffer; // will take care of deletion of old buffer
-            bufferSize = newBufferSize;
-            buffer.Get()[ sizeSoFar ] = '\000';
+            // Expand buffer for new data in large chunks
+            const uint32_t newBufferSize = Math::Max< uint32_t >( newSize, buffer.GetReserved() + ( 16 * MEGABYTE ) );
+            buffer.SetReserved( newBufferSize );
         }
-
-        ASSERT( sizeSoFar + bytesAvail <= bufferSize ); // sanity check
 
         // read the new data
         DWORD bytesReadNow = 0;
-        if ( !::ReadFile( handle, buffer.Get() + sizeSoFar, bytesAvail, (LPDWORD)&bytesReadNow, 0 ) )
-		{
-			return;
-		}
-        ASSERT( bytesReadNow == bytesAvail );
-        sizeSoFar += bytesReadNow;
-
-        // keep data null char terminated for caller convenience
-        buffer.Get()[ sizeSoFar ] = '\000';
+        if ( !::ReadFile( handle, buffer.Get() + sizeSoFar, bytesAvail, (LPDWORD)&bytesReadNow, nullptr ) )
+        {
+            ASSERT( false ); // error!
+        }
+        
+        // Update length
+        buffer.SetLength( sizeSoFar + bytesReadNow );
     }
 #endif
 
@@ -487,8 +713,8 @@ void Process::ReadAllData( AutoPtr< char > & outMem, uint32_t * outMemSize,
 // Read
 //------------------------------------------------------------------------------
 #if defined( __LINUX__ ) || defined( __APPLE__ )
-    void Process::Read( int handle, AutoPtr< char > & buffer, uint32_t & sizeSoFar, uint32_t & bufferSize )
-    {       
+    void Process::Read( int handle, AString & buffer )
+    {
         // any data available?
         timeval timeout;
         timeout.tv_sec = 0;
@@ -506,135 +732,27 @@ void Process::ReadAllData( AutoPtr< char > & outMem, uint32_t * outMemSize,
         {
             return; // no data available
         }
-        
+
         // how much space do we have left for reading into?
-        uint32_t spaceInBuffer = ( bufferSize - sizeSoFar );
+        uint32_t spaceInBuffer = ( buffer.GetReserved() - buffer.GetLength() );
         if ( spaceInBuffer == 0 )
         {
-            // allocate a bigger buffer (also handles the first time with no buffer)
-
-            // TODO:B look at a new container type (like a linked list of 1mb buffers) to avoid the wasteage here
-            // The caller has to take a copy to avoid the overhead if they want to hang onto the data
-            // grow buffer in at least 16MB chunks, to prevent future reallocations
-            uint32_t newBufferSize = ( sizeSoFar + ( 16 * MEGABYTE ) );
-            char * newBuffer = (char *)ALLOC( newBufferSize + 1 ); // +1 so we can always add a null char
-            if ( buffer.Get() )
-            {
-                // transfer and free old buffer
-                memcpy( newBuffer, buffer.Get(), sizeSoFar );
-            }
-            buffer = newBuffer; // will take care of deletion of old buffer
-            bufferSize = newBufferSize;
-            spaceInBuffer = ( bufferSize - sizeSoFar );
-            buffer.Get()[ sizeSoFar ] = '\000';
+            // Expand buffer for new data in large chunks
+            const uint32_t newBufferSize = ( buffer.GetReserved() + ( 16 * MEGABYTE ) );
+            buffer.SetReserved( newBufferSize );
+            spaceInBuffer = ( buffer.GetReserved() - buffer.GetLength() );
         }
 
         // read the new data
-        ssize_t result = read( handle, buffer.Get() + sizeSoFar, spaceInBuffer );
+        ssize_t result = read( handle, buffer.Get() + buffer.GetLength(), spaceInBuffer );
         if ( result == -1 )
         {
             ASSERT( false ); // error!
-            return;
+            result = 0; // no bytes read
         }
         
-        // account for newly read bytes
-        sizeSoFar += (uint32_t)result;
-
-        // keep data null char terminated for caller convenience
-        buffer.Get()[ sizeSoFar ] = '\000';
-    }
-#endif
-
-// ReadStdOut
-//------------------------------------------------------------------------------
-#if defined( __WINDOWS__ )
-    char * Process::ReadStdOut( uint32_t * bytesRead )
-    {
-        return Read( m_StdOutRead, bytesRead );
-    }
-#endif
-
-// ReadStdOut
-//------------------------------------------------------------------------------
-#if defined( __WINDOWS__ )
-    char * Process::ReadStdErr( uint32_t * bytesRead )
-    {
-        return Read( m_StdErrRead, bytesRead );
-    }
-#endif
-
-// ReadStdOut
-//------------------------------------------------------------------------------
-#if defined( __WINDOWS__ )
-    uint32_t Process::ReadStdOut( char * outputBuffer, uint32_t outputBufferSize )
-    {
-        return Read( m_StdOutRead, outputBuffer, outputBufferSize );
-    }
-#endif
-
-// ReadStdErr
-//------------------------------------------------------------------------------
-#if defined( __WINDOWS__ )
-    uint32_t Process::ReadStdErr( char * outputBuffer, uint32_t outputBufferSize )
-    {
-        return Read( m_StdErrRead, outputBuffer, outputBufferSize );
-    }
-#endif
-
-// Read
-//------------------------------------------------------------------------------
-#if defined( __WINDOWS__ )
-    char * Process::Read( HANDLE handle, uint32_t * bytesRead )
-    {
-        // see if there's anything in the pipe
-        DWORD bytesAvail;
-        VERIFY( PeekNamedPipe( handle, nullptr, 0, nullptr, (LPDWORD)&bytesAvail, nullptr ) );
-        if ( bytesAvail == 0 )
-        {
-            if ( bytesRead )
-            {
-                *bytesRead = 0;
-            }
-            return nullptr;
-        }
-
-        // allocate output buffer
-        char * mem = (char *)ALLOC( bytesAvail + 1 ); // null terminate for convenience
-        mem[ bytesAvail ] = 0;
-
-        // read the data
-        DWORD bytesReadNow = 0;
-        VERIFY( ReadFile( handle, mem, bytesAvail, (LPDWORD)&bytesReadNow, 0 ) );
-        ASSERT( bytesReadNow == bytesAvail );
-        if ( bytesRead )
-        {
-            *bytesRead = bytesReadNow;
-        }
-        return mem;
-    }
-#endif
-
-// Read
-//------------------------------------------------------------------------------
-#if defined( __WINDOWS__ )
-    uint32_t Process::Read( HANDLE handle, char * outputBuffer, uint32_t outputBufferSize )
-    {
-        // see if there's anything in the pipe
-        DWORD bytesAvail;
-        VERIFY( PeekNamedPipe( handle, nullptr, 0, 0, (LPDWORD)&bytesAvail, 0 ) );
-        if ( bytesAvail == 0 )
-        {
-            return 0;
-        }
-
-        // if there is more available than we have space for, just read as much as we can
-        uint32_t bytesToRead = Math::Min<uint32_t>( outputBufferSize, bytesAvail );
-
-        // read the data
-        DWORD bytesReadNow = 0;
-        VERIFY( ReadFile( handle, outputBuffer, bytesToRead, (LPDWORD)&bytesReadNow, 0 ) );
-        ASSERT( bytesReadNow == bytesToRead );
-        return bytesToRead;
+        // Update length
+        buffer.SetLength( buffer.GetLength() + (uint32_t)result );
     }
 #endif
 
@@ -642,13 +760,24 @@ void Process::ReadAllData( AutoPtr< char > & outMem, uint32_t * outMemSize,
 //------------------------------------------------------------------------------
 /*static*/ uint32_t Process::GetCurrentId()
 {
-	#if defined( __WINDOWS__ )
-		return ::GetCurrentProcessId();
-	#elif defined( __LINUX__ )
-		return 0; // TODO: Implement GetCurrentId()
-	#elif defined( __OSX__ )
-		return 0; // TODO: Implement GetCurrentId()
-	#endif
+    #if defined( __WINDOWS__ )
+        return ::GetCurrentProcessId();
+    #elif defined( __LINUX__ )
+        return ::getpid();
+    #elif defined( __OSX__ )
+        return ::getpid();
+    #endif
+}
+
+// Terminate
+//------------------------------------------------------------------------------
+void Process::Terminate()
+{
+    #if defined( __WINDOWS__ )
+        VERIFY( ::TerminateProcess( GetProcessInfo().hProcess, 1 ) );
+    #else
+        kill( m_ChildPID, SIGKILL );
+    #endif
 }
 
 //------------------------------------------------------------------------------

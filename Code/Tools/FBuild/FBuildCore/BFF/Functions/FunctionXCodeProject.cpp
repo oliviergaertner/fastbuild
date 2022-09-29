@@ -3,8 +3,6 @@
 
 // Includes
 //------------------------------------------------------------------------------
-#include "Tools/FBuild/FBuildCore/PrecompiledHeader.h"
-
 // FBuild
 #include "FunctionXCodeProject.h"
 #include "Tools/FBuild/FBuildCore/FBuild.h"
@@ -25,40 +23,14 @@ FunctionXCodeProject::FunctionXCodeProject()
 //------------------------------------------------------------------------------
 /*virtual*/ bool FunctionXCodeProject::AcceptsHeader() const
 {
-	return true;
+    return true;
 }
 
-// Commit
+// CreateNode
 //------------------------------------------------------------------------------
-/*virtual*/ bool FunctionXCodeProject::Commit( const BFFIterator & funcStartIter ) const
+/*virtual*/ Node * FunctionXCodeProject::CreateNode() const
 {
-	NodeGraph & ng = FBuild::Get().GetDependencyGraph();
-	AStackString<> name;
-	if ( GetNameForNode( funcStartIter, XCodeProjectNode::GetReflectionInfoS(), name ) == false )
-	{
-		return false;
-	}
-
-	if ( ng.FindNode( name ) )
-	{
-		Error::Error_1100_AlreadyDefined( funcStartIter, this, name );
-		return false;
-	}
-
-	auto * xcodeProjNode = ng.CreateXCodeProjectNode( name );
-
-	if ( !PopulateProperties( funcStartIter, xcodeProjNode ) )
-	{
-		return false;
-	}
-
-	if ( !xcodeProjNode->Initialize( funcStartIter, this ) )
-    {
-        return false;
-    }
-
-	// handle alias creation
-	return ProcessAlias( funcStartIter, xcodeProjNode );
+    return FNEW( XCodeProjectNode );
 }
 
 //------------------------------------------------------------------------------

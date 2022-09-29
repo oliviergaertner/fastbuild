@@ -5,20 +5,24 @@
 Using( .StandardEnvironment )
 Settings {} // Activate standard settings
 
+.CompilerInputPathRecurse = false
+
 Library( "CLR-Target" )
 {
-	.CompilerOptions	+ ' /clr'
-	.CompilerInputFiles	= "Data/TestCLR/a.cpp"
-	.CompilerOutputPath	= "$Out$/Test/CLR/"
-	.LibrarianOutput	= "$Out$/Test/CLR/clr.lib"
+    .CompilerOptions    + ' /clr'
+                        + ' /Zc:twoPhase-' // two-phase name lookup is not supported for C++/CLI, C++/CX, or OpenMP
+    .CompilerInputFiles = "Tools/FBuild/FBuildTest/Data/TestCLR/a.cpp"
+    .CompilerOutputPath = "$Out$/Test/CLR/"
+    .LibrarianOutput    = "$Out$/Test/CLR/clr.lib"
 }
 
 Library( "CLR-Parallel-Target" )
 {
-	.CompilerOptions	+ ' /clr'
-	.CompilerInputPath	= "Data/TestCLR/"
-	.CompilerOutputPath	= "$Out$/Test/CLR/"
-	.LibrarianOutput	= "$Out$/Test/CLR/clrmulti.lib"
+    .CompilerOptions    + ' /clr'
+                        + ' /Zc:twoPhase-' // two-phase name lookup is not supported for C++/CLI, C++/CX, or OpenMP
+    .CompilerInputPath  = "Tools/FBuild/FBuildTest/Data/TestCLR/"
+    .CompilerOutputPath = "$Out$/Test/CLR/"
+    .LibrarianOutput    = "$Out$/Test/CLR/clrmulti.lib"
 }
 
 //
@@ -26,32 +30,32 @@ Library( "CLR-Parallel-Target" )
 //
 Library( 'BrigeTest-CLR' )
 {
-	.CompilerOptions	+ ' /clr'
-	.CompilerInputFiles	= { 'Data/TestCLR/a.cpp',
-							'Data/TestCLR/b.cpp' }
-	.CompilerOutputPath	= '$Out$/Test/CLR/Bridge/'
-	.LibrarianOutput	= '$Out$/Test/CLR/Bridge/clr.lib'
+    .CompilerOptions    + ' /clr'
+                        + ' /Zc:twoPhase-' // two-phase name lookup is not supported for C++/CLI, C++/CX, or OpenMP
+    .CompilerInputFiles = { 'Tools/FBuild/FBuildTest/Data/TestCLR/a.cpp',
+                            'Tools/FBuild/FBuildTest/Data/TestCLR/b.cpp' }
+    .CompilerOutputPath = '$Out$/Test/CLR/Bridge/'
+    .LibrarianOutput    = '$Out$/Test/CLR/Bridge/clr.lib'
 }
 ObjectList( 'BridgeTest-CPP' )
 {
-	.CompilerInputFiles	= 'Data/TestCLR/exe.cxx'
-	.CompilerOutputPath	= '$Out$/Test/CLR/Bridge/'
-	.LibrarianOutput	= '$Out$/Test/CLR/Bridge/exe.lib'
+    .CompilerInputFiles = 'Tools/FBuild/FBuildTest/Data/TestCLR/exe.cxx'
+    .CompilerOutputPath = '$Out$/Test/CLR/Bridge/'
 }
 
 Executable( 'BridgeTest-Exe' )
 {
-	.LinkerOptions		+ ' /SUBSYSTEM:CONSOLE'
-						+ ' /ENTRY:ExeMain'
-						+ ' kernel32.lib'
-						+ ' MSCOREE.lib'
-						+ ' msvcmrt.lib'
-						+ ' msvcrt.LIB'
-						+ ' /LIBPATH:"$WindowsSDK$\Lib\winv6.3\um\x86"'
-						+ ' /LIBPATH:"$VisualStudioPath$\VC\lib"'
+    .LinkerOptions      + ' /SUBSYSTEM:CONSOLE'
+                        + ' /ENTRY:ExeMain'
+                        + ' kernel32.lib'
+                        + ' libvcruntime.lib'
+                        + ' libucrt.lib'
+                        + ' libcmt.lib'
+                        + ' msvcmrt.lib'
+                        + ' WindowsApp.lib'
 
-	.LinkerOutput		= '$Out$/Test/CLR/Bridge/Bridge.exe'
-	.Libraries			= { 'BridgeTest-CPP',
-							'BrigeTest-CLR'
-						  }
+    .LinkerOutput       = '$Out$/Test/CLR/Bridge/Bridge.exe'
+    .Libraries          = { 'BridgeTest-CPP',
+                            'BrigeTest-CLR'
+                          }
 }

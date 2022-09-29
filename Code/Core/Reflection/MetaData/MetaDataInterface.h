@@ -1,24 +1,22 @@
 // MetaDaatInterface.h
 //------------------------------------------------------------------------------
 #pragma once
-#ifndef CORE_REFLECTION_METADATAINTERFACE_H
-#define CORE_REFLECTION_METADATAINTERFACE_H
 
 // Includes
 //------------------------------------------------------------------------------
+#include "Core/Reflection/Object.h"
 #include "Core/Reflection/ReflectionMacros.h"
-#include "Core/Reflection/RefObject.h"
 
 // IMetaData
 //------------------------------------------------------------------------------
-class IMetaData : public RefObject
+class IMetaData : public Object
 {
     REFLECT_DECLARE( IMetaData )
 public:
     explicit IMetaData();
-    virtual ~IMetaData();
+    virtual ~IMetaData() override;
 
-    const IMetaData* GetNext() const { return m_Next; }
+    const IMetaData * GetNext() const { return m_Next; }
 protected:
     friend IMetaData & operator + ( IMetaData & a, IMetaData & b );
 
@@ -26,4 +24,3 @@ protected:
 };
 
 //------------------------------------------------------------------------------
-#endif // CORE_REFLECTION_METADATAINTERFACE_H

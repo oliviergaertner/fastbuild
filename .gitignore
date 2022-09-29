@@ -1,18 +1,18 @@
 # FASTBuild
-External/SDK
 *.exe
 *.fdb
+*.fdb.corrupt
 *.log
 *.opensdf
 *.pdb
 *.sdf
 *.suo
 *.user
-*.vcxproj
-*.vcxproj.filters
+fbuild-linux
 tmp/
 ftmp/
 bin/
+profile.json
 
 # Temp files
 *.bak
@@ -27,11 +27,16 @@ Desktop.ini
 # Recycle Bin used on file shares
 $RECYCLE.BIN/
 
-# Windows Installer files
-*.cab
-*.msi
-*.msm
-*.msp
+# SDKs and Compilers
+External/SDK/Clang/Linux/*/
+External/SDK/Clang/OSX/*/
+External/SDK/Clang/Windows/*/
+External/SDK/CUDA_6.5.14/
+External/SDK/GCC/Linux/*/
+External/SDK/GCC/OSX/*/
+External/SDK/GCC/Windows/*/
+External/SDK/VisualStudio/*/
+External/SDK/Windows/*/
 
 # Windows shortcuts
 *.lnk

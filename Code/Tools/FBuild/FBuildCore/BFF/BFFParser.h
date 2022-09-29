@@ -1,12 +1,13 @@
 // BFFParser - loads BFF files, extracting build rules
 //------------------------------------------------------------------------------
 #pragma once
-#ifndef FBUILD_BFFPARSER_H
-#define FBUILD_BFFPARSER_H
 
 // Includes
 //------------------------------------------------------------------------------
-#include "BFFIterator.h"
+#include "Tools/FBuild/FBuildCore/BFF/BFFStackFrame.h"
+#include "Tools/FBuild/FBuildCore/BFF/LinkerNodeFileExistsCache.h"
+#include "Tools/FBuild/FBuildCore/BFF/Tokenizer/BFFToken.h"
+#include "Tools/FBuild/FBuildCore/BFF/Tokenizer/BFFTokenizer.h"
 
 #include "Core/Env/Assert.h"
 #include "Core/Env/Types.h"
@@ -15,83 +16,85 @@
 
 // Forward Declarations
 //------------------------------------------------------------------------------
+class BFFFile;
+class BFFTokenRange;
+class BFFUserFunction;
 class FileStream;
-class BFFStackFrame;
+class Function;
+class NodeGraph;
 
 // BFFParser
 //------------------------------------------------------------------------------
 class BFFParser
 {
 public:
-	explicit BFFParser();
-	~BFFParser();
+    explicit BFFParser( NodeGraph & nodeGraph );
+    ~BFFParser();
 
-	// Parse BFF data
-	// - data provided must be followed by a single null character
-	// - size passed must exclude null character
-	bool Parse( const char * dataWithSentinel, 
-			    uint32_t sizeExcludingSentinel,
-				const char * fileName,
-				uint64_t fileTimeStamp,
-				bool pushStackFrame = true );
-	bool Parse( BFFIterator & iterator );
+    // Parse BFF data
+    bool ParseFromFile( const char * fileName );
+    bool ParseFromString( const char * fileName, const char * fileContents );
+    bool Parse( BFFTokenRange & tokenRange );
 
-	enum { BFF_COMMENT_SEMICOLON = ';' };
-	enum { BFF_COMMENT_SLASH = '/' };
-	enum { BFF_DECLARE_VAR_INTERNAL = '.' };
-	enum { BFF_DECLARE_VAR_PARENT = '^' };
-	enum { BFF_VARIABLE_ASSIGNMENT = '=' };
-	enum { BFF_VARIABLE_CONCATENATION = '+' };
-	enum { BFF_VARIABLE_SUBTRACTION = '-' };
-	enum { BFF_START_ARRAY = '{' };
-	enum { BFF_END_ARRAY = '}' };
-	enum { BFF_FUNCTION_ARGS_OPEN = '(' };
-	enum { BFF_FUNCTION_ARGS_CLOSE = ')' };
-	enum { BFF_SCOPE_OPEN = '{' };
-	enum { BFF_SCOPE_CLOSE = '}' };
-	enum { BFF_STRUCT_OPEN = '[' };
-	enum { BFF_STRUCT_CLOSE = ']' };
-	enum { BFF_PREPROCESSOR_START = '#' };
+    const Array<BFFFile *> & GetUsedFiles() const { return m_Tokenizer.GetUsedFiles(); }
 
-	enum { MAX_VARIABLE_NAME_LENGTH = 64 };
-	enum { MAX_FUNCTION_NAME_LENGTH = 64 };
-	enum { MAX_DIRECTIVE_NAME_LENGTH = 64 };
+    enum { BFF_COMMENT_SEMICOLON = ';' };
+    enum { BFF_COMMENT_SLASH = '/' };
+    enum { BFF_DECLARE_VAR_INTERNAL = '.' };
+    enum { BFF_DECLARE_VAR_PARENT = '^' };
+    enum { BFF_VARIABLE_ASSIGNMENT = '=' };
+    enum { BFF_VARIABLE_CONCATENATION = '+' };
+    enum { BFF_VARIABLE_SUBTRACTION = '-' };
+    enum { BFF_START_ARRAY = '{' };
+    enum { BFF_END_ARRAY = '}' };
+    enum { BFF_FUNCTION_ARGS_OPEN = '(' };
+    enum { BFF_FUNCTION_ARGS_CLOSE = ')' };
+    enum { BFF_SCOPE_OPEN = '{' };
+    enum { BFF_SCOPE_CLOSE = '}' };
+    enum { BFF_STRUCT_OPEN = '[' };
+    enum { BFF_STRUCT_CLOSE = ']' };
+    enum { BFF_PREPROCESSOR_START = '#' };
 
-	static bool PerformVariableSubstitutions( const BFFIterator & startIter, const BFFIterator & endIter, AString & value );
-	static bool ParseVariableName( BFFIterator & iter, AString & name, bool & parentScope );
+    enum { MAX_VARIABLE_NAME_LENGTH = 256 };
+    enum { MAX_OPERATOR_HISTORY = 256 };
+
+    static bool PerformVariableSubstitutions( const BFFToken * inputToken, AString & value );
+    static bool ParseVariableName( const BFFToken * iter, AString & name, bool & parentScope );
 
 private:
-	bool ParseUnnamedVariableModification( BFFIterator & iter );
-	bool ParseNamedVariableDeclaration( BFFIterator & parseIndex );
-	bool ParseVariableDeclaration( BFFIterator & iter, const AString & varName, BFFStackFrame * frame );
-	bool ParseFunction( BFFIterator & parseIndex );
-	bool ParseUnnamedScope( BFFIterator & iter );
-	bool ParsePreprocessorDirective( BFFIterator & iter );
-	bool ParseIncludeDirective( BFFIterator & iter );
-	bool ParseDefineDirective( BFFIterator & iter );
-	bool ParseUndefDirective( BFFIterator & iter );
-	bool ParseIfDirective( const BFFIterator & directiveStart, BFFIterator & iter );
-	bool ParseEndIfDirective( const BFFIterator & directiveStart );
-	bool CheckIfCondition( const BFFIterator & conditionStart, const BFFIterator & conditionEnd, bool & result );
-	bool ParseImportDirective( const BFFIterator & directiveStart, BFFIterator & iter );
+    bool ParseUnnamedVariableModification( BFFTokenRange & iter );
+    bool ParseNamedVariableDeclaration( BFFTokenRange & iter );
+    bool ParseVariableDeclaration( BFFTokenRange & iter, const AString & varName, BFFStackFrame * frame );
+    bool ParseFunction( BFFTokenRange & iter );
+    bool ParseUnnamedScope( BFFTokenRange & iter );
+    bool ParseUserFunctionDeclaration( BFFTokenRange & iter );
+    bool ParseUserFunctionCall( BFFTokenRange & iter, const BFFUserFunction & function );
 
-	bool StoreVariableString( const AString & name, const BFFIterator & valueStart, const BFFIterator & valueEnd, const BFFIterator & operatorIter, BFFStackFrame * frame );
-	bool StoreVariableArray( const AString & name, const BFFIterator & valueStart, const BFFIterator & valueEnd, const BFFIterator & operatorIter, BFFStackFrame * frame );
-	bool StoreVariableStruct( const AString & name, const BFFIterator & valueStart, const BFFIterator & valueEnd, const BFFIterator & operatorIter, BFFStackFrame * frame );
-	bool StoreVariableBool( const AString & name, bool value, BFFStackFrame * frame );
-	bool StoreVariableInt( const AString & name, int value, BFFStackFrame * frame );
-	bool StoreVariableToVariable( const AString & dstName, BFFIterator & iter, const BFFIterator & operatorIter, BFFStackFrame * dstFrame );
-	// store the last seen variable
-	bool m_SeenAVariable;
-	AStackString< MAX_VARIABLE_NAME_LENGTH > m_LastVarName;
-	BFFStackFrame * m_LastVarFrame;
+    bool FindBracedRange( BFFTokenRange & iter, BFFTokenRange & outBracedRange, const Function * function = nullptr ) const;
+    bool FindBracedRangeRecurse( BFFTokenRange & iter ) const;
 
-	// track recursion depth to detect recursion or excessive complexity
-	static uint32_t s_Depth;
+    bool StoreVariableString( const AString & name, const BFFToken * rhsString, const BFFToken * operatorToken, BFFStackFrame * frame );
+    bool StoreVariableArray( const AString & name, const BFFTokenRange & tokenRange, const BFFToken * operatorIter, BFFStackFrame * frame );
+    bool StoreVariableStruct( const AString & name, const BFFTokenRange & tokenRange, const BFFToken * operatorToken, BFFStackFrame * frame );
+    bool StoreVariableBool( const AString & name, bool value, BFFStackFrame * frame );
+    bool StoreVariableInt( const AString & name, int value, BFFStackFrame * frame );
+    bool StoreVariableToVariable( const AString & dstName, const BFFToken * rhsToken, const BFFToken * operatorToken, BFFStackFrame * dstFrame );
 
-	// track nested preprocessor directives
-	static uint32_t s_IfDepth;
+    void CreateBuiltInVariables();
+    void SetBuiltInVariable_CurrentBFFDir( const BFFFile & file );
+    BFFUserFunction * GetUserFunction( const AString & name );
+
+    NodeGraph & m_NodeGraph;
+
+    BFFStackFrame m_BaseStackFrame;
+
+    // CurrentBFFDir related
+    const BFFFile * m_CurrentBFFFile = nullptr;
+
+    BFFTokenizer m_Tokenizer;
+    LinkerNodeFileExistsCache m_LinkerNodeFileExistsCache;
+
+    BFFParser & operator = (const BFFParser &) = delete;
 };
 
 //------------------------------------------------------------------------------
-#endif // FBUILD_BFFPARSER_H

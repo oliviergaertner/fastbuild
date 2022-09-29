@@ -1,8 +1,6 @@
 // CachePlugin - Wrapper around external cache plugin DLL
 //------------------------------------------------------------------------------
 #pragma once
-#ifndef FBUILD_CACHEPLUGIN_H
-#define FBUILD_CACHEPLUGIN_H
 
 // Includes
 //------------------------------------------------------------------------------
@@ -18,24 +16,36 @@ class AString;
 class CachePlugin : public ICache
 {
 public:
-	explicit CachePlugin( const AString & dllName );
-	virtual ~CachePlugin();
+    explicit CachePlugin( const AString & dllName );
+    virtual ~CachePlugin() override;
 
-	virtual bool Init( const AString & cachePath );
-	virtual void Shutdown();
-	virtual bool Publish( const AString & cacheId, const void * data, size_t dataSize );
-	virtual bool Retrieve( const AString & cacheId, void * & data, size_t & dataSize );
-	virtual void FreeMemory( void * data, size_t dataSize );
+    virtual bool Init( const AString & cachePath,
+                       const AString & cachePathMountPoint,
+                       bool cacheRead,
+                       bool cacheWrite,
+                       bool cacheVerbose,
+                       const AString & pluginDLLConfig ) override;
+    virtual void Shutdown() override;
+    virtual bool Publish( const AString & cacheId, const void * data, size_t dataSize ) override;
+    virtual bool Retrieve( const AString & cacheId, void * & data, size_t & dataSize ) override;
+    virtual void FreeMemory( void * data, size_t dataSize ) override;
+    virtual bool OutputInfo( bool showProgress ) override;
+    virtual bool Trim( bool showProgress, uint32_t sizeMiB ) override;
 private:
-	void * GetFunction( const char * friendlyName, const char * mangledName = nullptr ) const;
+    void * GetFunction( const char * friendlyName, const char * mangledName = nullptr, bool optional = false );
 
-    void *				m_DLL;
-	CacheInitFunc		m_InitFunc;
-	CacheShutdownFunc	m_ShutdownFunc;
-	CachePublishFunc	m_PublishFunc;
-	CacheRetrieveFunc	m_RetrieveFunc;
-	CacheFreeMemoryFunc	m_FreeMemoryFunc;
+    static void CacheOutputWrapper( const char * message );
+
+    void *              m_DLL;
+    bool                m_Valid;
+    CacheInitFunc       m_InitFunc;
+    CacheInitExFunc     m_InitExFunc;
+    CacheShutdownFunc   m_ShutdownFunc;
+    CachePublishFunc    m_PublishFunc;
+    CacheRetrieveFunc   m_RetrieveFunc;
+    CacheFreeMemoryFunc m_FreeMemoryFunc;
+    CacheOutputInfoFunc m_OutputInfoFunc;
+    CacheTrimFunc       m_TrimFunc;
 };
 
 //------------------------------------------------------------------------------
-#endif // FBUILD_CACHEPLUGIN_H

@@ -21,12 +21,11 @@
 .Var = ";"
 
 ; scope tokens in strings
-Settings
 {
-	.A = "{{{{{"
-	.B = '{{{{{'
-	.C = ';'
-	.D = ";"
+    .A = "{{{{{"
+    .B = '{{{{{'
+    .C = ';'
+    .D = ";"
 }
 
 // assignment

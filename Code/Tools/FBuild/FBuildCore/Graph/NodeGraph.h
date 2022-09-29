@@ -1,14 +1,12 @@
 // NodeGraph.h - interface to the dependency graph
 //------------------------------------------------------------------------------
 #pragma once
-#ifndef FBUILD_GRAPH_NODEGRAPH_H
-#define FBUILD_GRAPH_NODEGRAPH_H
 
 // Includes
 //------------------------------------------------------------------------------
+#include "Tools/FBuild/FBuildCore/BFF/BFFFileExists.h"
 #include "Tools/FBuild/FBuildCore/Helpers/SLNGenerator.h"
 #include "Tools/FBuild/FBuildCore/Helpers/VSProjectGenerator.h"
-#include "Tools/FBuild/FBuildCore/Graph/Node.h" // TODO:C remove when USE_NODE_REFLECTION is removed
 
 #include "Core/Containers/Array.h"
 #include "Core/Strings/AString.h"
@@ -20,7 +18,7 @@ class AliasNode;
 class AString;
 class CompilerNode;
 class CopyDirNode;
-class CopyNode;
+class CopyFileNode;
 class CSNode;
 class Dependencies;
 class DirectoryListNode;
@@ -31,14 +29,20 @@ class FileNode;
 class IOStream;
 class LibraryNode;
 class LinkerNode;
+class ListDependenciesNode;
 class Node;
 class ObjectListNode;
 class ObjectNode;
+class ReflectionInfo;
+class ReflectedProperty;
 class RemoveDirNode;
+class SettingsNode;
 class SLNNode;
 class TestNode;
+class TextFileNode;
 class UnityNode;
 class VCXProjectNode;
+class VSProjectExternalNode;
 class XCodeProjectNode;
 
 // NodeGraphHeader
@@ -46,27 +50,27 @@ class XCodeProjectNode;
 class NodeGraphHeader
 {
 public:
-	inline explicit NodeGraphHeader()
-	{
-		m_Identifier[ 0 ] = 'N';
-		m_Identifier[ 1 ] = 'G';
-		m_Identifier[ 2 ] = 'D';
-		m_Version = NODE_GRAPH_CURRENT_VERSION;
-	}
-	inline ~NodeGraphHeader() {}
+    inline explicit NodeGraphHeader()
+    {
+        m_Identifier[ 0 ] = 'N';
+        m_Identifier[ 1 ] = 'G';
+        m_Identifier[ 2 ] = 'D';
+        m_Version = NODE_GRAPH_CURRENT_VERSION;
+    }
+    inline ~NodeGraphHeader() = default;
 
-	enum { NODE_GRAPH_CURRENT_VERSION = 75 };
+    enum : uint8_t { NODE_GRAPH_CURRENT_VERSION = 162 };
 
-	bool IsValid() const
-	{
-		return ( ( m_Identifier[ 0 ] == 'N' ) &&
-				 ( m_Identifier[ 1 ] == 'G' ) &&
-				 ( m_Identifier[ 2 ] == 'D' ) );
-	}
-	bool IsCompatibleVersion() const { return m_Version == NODE_GRAPH_CURRENT_VERSION; }
+    bool IsValid() const
+    {
+        return ( ( m_Identifier[ 0 ] == 'N' ) &&
+                 ( m_Identifier[ 1 ] == 'G' ) &&
+                 ( m_Identifier[ 2 ] == 'D' ) );
+    }
+    bool IsCompatibleVersion() const { return m_Version == NODE_GRAPH_CURRENT_VERSION; }
 private:
-	char		m_Identifier[ 3 ];
-	uint8_t		m_Version;
+    char        m_Identifier[ 3 ];
+    uint8_t     m_Version;
 };
 
 // NodeGraph
@@ -74,228 +78,159 @@ private:
 class NodeGraph
 {
 public:
-	explicit NodeGraph();
-	~NodeGraph();
+    explicit NodeGraph();
+    ~NodeGraph();
 
-	bool Initialize( const char * bffFile, const char * nodeGraphDBFile );
+    static NodeGraph * Initialize( const char * bffFile, const char * nodeGraphDBFile, bool forceMigration );
 
-	bool Load( const char * nodeGraphDBFile, bool & needReparsing );
-	bool Load( IOStream & stream, bool & needReparsing );
-	void Save( IOStream & stream ) const;
+    enum class LoadResult
+    {
+        MISSING_OR_INCOMPATIBLE,
+        LOAD_ERROR,
+        LOAD_ERROR_MOVED,
+        OK_BFF_NEEDS_REPARSING,
+        OK
+    };
+    NodeGraph::LoadResult Load( const char * nodeGraphDBFile );
 
-	// access existing nodes
-	Node * FindNode( const AString & nodeName ) const;
-	Node * GetNodeByIndex( size_t index ) const;
-	size_t GetNodeCount() const;
+    LoadResult Load( IOStream & stream, const char * nodeGraphDBFile );
+    void Save( IOStream & stream, const char * nodeGraphDBFile ) const;
+    void SerializeToText( const Dependencies & dependencies, AString & outBuffer ) const;
+    void SerializeToDotFormat( const Dependencies & deps, const bool fullGraph, AString & outBuffer ) const;
 
-	// create new nodes
-	CopyNode * CreateCopyNode( const AString & dstFileName, 
-							   Node * sourceFile,
-							   const Dependencies & preBuildDependencies );
-	CopyDirNode * CreateCopyDirNode( const AString & nodeName, 
-									 Dependencies & staticDeps,
-									 const AString & destPath,
-									 const Dependencies & preBuildDependencies );
-	RemoveDirNode * CreateRemoveDirNode(const AString & nodeName,
-									 	Dependencies & staticDeps,
-									 	const Dependencies & preBuildDependencies );
-	ExecNode * CreateExecNode( const AString & dstFileName, 
-							   const Dependencies & inputFiles, 
-							   FileNode * executable, 
-							   const AString & arguments, 
-							   const AString & workingDir,
-							   int32_t expectedReturnCode,
-							   const Dependencies & preBuildDependencies,
-							   bool useStdOutAsOutput );
-	FileNode * CreateFileNode( const AString & fileName, bool cleanPath = true );
-	DirectoryListNode * CreateDirectoryListNode( const AString & name,
-												 const AString & path,
-												 const Array< AString > * patterns,
-												 bool recursive,
-                                                 const Array< AString > & excludePaths,
-                                                 const Array< AString > & filesToExclude
-                                                 );
-	LibraryNode *	CreateLibraryNode( const AString & libraryName,
-									   const Dependencies & inputNodes,
-									   CompilerNode * compilerNode,
-									   const AString & compilerArgs,
-									   const AString & compilerArgsDeoptimized,
-									   const AString & compilerOutputPath,
-									   const AString & linker,
-									   const AString & linkerArgs,
-									   uint32_t flags,
-									   ObjectNode * precompiledHeader,
-									   const Dependencies & compilerForceUsing,
-									   const Dependencies & preBuildDependencies,
-									   const Dependencies & additionalInputs,
-									   bool deoptimizeWritableFiles,
-									   bool deoptimizeWritableFilesWithToken,
-									   bool allowDistribution,
-									   bool allowCaching,
-                                       CompilerNode * preprocessor,
-                                       const AString & preprocessorArgs );
-	ObjectNode *	CreateObjectNode( const AString & objectName,
-									  Node * inputNode,
-									  Node * compilerNode,
-									  const AString & compilerArgs,
-									  const AString & compilerArgsDeoptimized,
-									  Node * precompiledHeader,
-									  uint32_t flags,
-									  const Dependencies & compilerForceUsing,
-									  bool deoptimizeWritableFiles,
-									  bool deoptimizeWritableFilesWithToken,
-									  bool allowDistribution,
-									  bool allowCaching,
-                                      Node * preprocessorNode,
-                                      const AString & preprocessorArgs,
-                                      uint32_t preprocessorFlags );
-#ifdef USE_NODE_REFLECTION
-	AliasNode *		CreateAliasNode( const AString & aliasName );
-#else
-	AliasNode *		CreateAliasNode( const AString & aliasName,
-									 const Dependencies & targets );
-#endif
-	DLLNode *		CreateDLLNode( const AString & linkerOutputName,
-								   const Dependencies & inputLibraries,
-								   const Dependencies & otherLibraries,
-								   const AString & linkerType,
-								   const AString & linker,
-								   const AString & linkerArgs,
-								   uint32_t flags,
-								   const Dependencies & assemblyResources,
-								   const AString & importLibName,
-								   Node * linkerStampExe,
-								   const AString & linkerStampExeArgs );
-	ExeNode *		CreateExeNode( const AString & linkerOutputName,
-								   const Dependencies & inputLibraries,
-								   const Dependencies & otherLibraries,
-								   const AString & linkerType,
-								   const AString & linker,
-								   const AString & linkerArgs,
-								   uint32_t flags,
-								   const Dependencies & assemblyResources,
-								   const AString & importLibName,
-								   Node * linkerStampExe,
-								   const AString & linkerStampExeArgs );
-	UnityNode *	CreateUnityNode( const AString & unityName );
-	CSNode * CreateCSNode( const AString & compilerOutput,
-						   const Dependencies & inputNodes,
-						   const AString & compiler,
-						   const AString & compilerOptions,
-						   const Dependencies & extraRefs );
-	TestNode * CreateTestNode( const AString & testOutput,
-							   FileNode * testExecutable,
-							   const AString & arguments,
-							   const AString & workingDir );
-	CompilerNode * CreateCompilerNode( const AString & executable );
-	VCXProjectNode * CreateVCXProjectNode( const AString & projectOutput,
-										   const Array< AString > & projectBasePaths,
-										   const Dependencies & paths,
-										   const Array< AString > & pathsToExclude,
-										   const Array< AString > & files,
-										   const Array< AString > & filesToExclude,
-										   const AString & rootNamespace,
-										   const AString & projectGuid,
-										   const AString & defaultLanguage,
-										   const AString & applicationEnvironment,
-										   const Array< VSProjectConfig > & configs,
-										   const Array< VSProjectFileType > & fileTypes,
-										   const Array< AString > & references,
-										   const Array< AString > & projectReferences );
-	SLNNode * CreateSLNNode( 	const AString & solutionOutput,
-								const AString & solutionBuildProject,
-								const AString & solutionVisualStudioVersion,
-                        		const AString & solutionMinimumVisualStudioVersion,
-								const Array< VSProjectConfig > & configs,
-								const Array< VCXProjectNode * > & projects,
-								const Array< SLNDependency > & slnDeps,
-								const Array< SLNSolutionFolder > & folders );
-	ObjectListNode * CreateObjectListNode( const AString & listName,
-							 const Dependencies & inputNodes,
-							 CompilerNode * compiler,
-							 const AString & compilerArgs,
-							 const AString & compilerArgsDeoptimized,
-							 const AString & compilerOutputPath,
-							 ObjectNode * precompiledHeader,
-							 const Dependencies & compilerForceUsing,
-							 const Dependencies & preBuildDependencies,
-							 bool deoptimizeWritableFiles,
-							 bool deoptimizeWritableFilesWithToken,
-							 bool allowDistribution,
-							 bool allowCaching,
-                             CompilerNode * preprocessor,
-                             const AString & preprocessorArgs );
-	XCodeProjectNode * CreateXCodeProjectNode( const AString & name );
+    // access existing nodes
+    Node * FindNode( const AString & nodeName ) const;
+    Node * FindNodeExact( const AString & nodeName ) const;
+    Node * GetNodeByIndex( size_t index ) const;
+    size_t GetNodeCount() const;
+    const SettingsNode * GetSettings() const { return m_Settings; }
 
-	void DoBuildPass( Node * nodeToBuild );
+    void RegisterNode( Node * n );
 
-	static void CleanPath( const AString & name, AString & fullPath );
+    // create new nodes
+    CopyFileNode * CreateCopyFileNode( const AString & dstFileName );
+    CopyDirNode * CreateCopyDirNode( const AString & nodeName );
+    RemoveDirNode * CreateRemoveDirNode( const AString & nodeName );
+    ExecNode * CreateExecNode( const AString & dstFileName );
+    FileNode * CreateFileNode( const AString & fileName, bool cleanPath = true );
+    DirectoryListNode * CreateDirectoryListNode( const AString & name );
+    LibraryNode *   CreateLibraryNode( const AString & libraryName );
+    ObjectNode *    CreateObjectNode( const AString & objectName );
+    AliasNode *     CreateAliasNode( const AString & aliasName );
+    DLLNode *       CreateDLLNode( const AString & dllName );
+    ExeNode *       CreateExeNode( const AString & exeName );
+    UnityNode * CreateUnityNode( const AString & unityName );
+    CSNode * CreateCSNode( const AString & csAssemblyName );
+    TestNode * CreateTestNode( const AString & testOutput );
+    CompilerNode * CreateCompilerNode( const AString & name );
+    VSProjectBaseNode * CreateVCXProjectNode( const AString & name );
+    VSProjectBaseNode * CreateVSProjectExternalNode( const AString& name );
+    SLNNode * CreateSLNNode( const AString & name );
+    ObjectListNode * CreateObjectListNode( const AString & listName );
+    XCodeProjectNode * CreateXCodeProjectNode( const AString & name );
+    SettingsNode * CreateSettingsNode( const AString & name );
+    ListDependenciesNode* CreateListDependenciesNode( const AString& name );
+    TextFileNode * CreateTextFileNode( const AString & name );
 
-	// as BFF files are encountered during parsing, we track them
-	void AddUsedFile( const AString & fileName, uint64_t timeStamp );
-	bool IsOneUseFile( const AString & fileName ) const;
-	void SetCurrentFileAsOneUse();
+    void DoBuildPass( Node * nodeToBuild );
 
-	static void UpdateBuildStatus( const Node * node, 
-								   uint32_t & nodesBuiltTime, 
-								   uint32_t & totalNodeTime );
+    static void CleanPath( AString & name, bool makeFullPath = true );
+    static void CleanPath( const AString & name, AString & cleanPath, bool makeFullPath = true );
+    #if defined( ASSERTS_ENABLED )
+        static bool IsCleanPath( const AString & path );
+    #endif
+
+    static void UpdateBuildStatus( const Node * node,
+                                   uint32_t & nodesBuiltTime,
+                                   uint32_t & totalNodeTime );
 private:
-	friend class FBuild;
+    friend class FBuild;
 
-	void AddNode( Node * node );
+    bool ParseFromRoot( const char * bffFile );
 
-	static void BuildRecurse( Node * nodeToBuild, uint32_t cost );
-	static bool CheckDependencies( Node * nodeToBuild, const Dependencies & dependencies, uint32_t cost );
-	static void UpdateBuildStatusRecurse( const Node * node, 
-										  uint32_t & nodesBuiltTime, 
-										  uint32_t & totalNodeTime );
-	static void UpdateBuildStatusRecurse( const Dependencies & dependencies, 
-										  uint32_t & nodesBuiltTime, 
-										  uint32_t & totalNodeTime );
+    void AddNode( Node * node );
 
-	Node * FindNodeInternal( const AString & fullPath ) const;
+    void BuildRecurse( Node * nodeToBuild, uint32_t cost );
+    bool CheckDependencies( Node * nodeToBuild, const Dependencies & dependencies, uint32_t cost );
+    static void UpdateBuildStatusRecurse( const Node * node,
+                                          uint32_t & nodesBuiltTime,
+                                          uint32_t & totalNodeTime );
+    static void UpdateBuildStatusRecurse( const Dependencies & dependencies,
+                                          uint32_t & nodesBuiltTime,
+                                          uint32_t & totalNodeTime );
 
-	struct NodeWithDistance
-	{
-		inline NodeWithDistance() {}
-		NodeWithDistance( Node * n, uint32_t dist ) : m_Node( n ), m_Distance( dist ) {}
-		Node * 		m_Node;
-		uint32_t 	m_Distance;
-	};
-	void FindNearestNodesInternal( const AString & fullPath, Array< NodeWithDistance > & nodes, const uint32_t maxDistance = 5 ) const;
+    static bool CheckForCyclicDependencies( const Node * node );
+    static bool CheckForCyclicDependenciesRecurse( const Node * node, Array< const Node * > & dependencyStack );
+    static bool CheckForCyclicDependenciesRecurse( const Dependencies & dependencies,
+                                                   Array< const Node * > & dependencyStack );
 
-	struct UsedFile;
-	bool ReadHeaderAndUsedFiles( IOStream & nodeGraphStream, Array< UsedFile > & files, bool & compatibleDB ) const;
-	uint32_t GetLibEnvVarHash() const;
+    Node * FindNodeInternal( const AString & fullPath ) const;
 
-	// load/save helpers
-	static void SaveRecurse( IOStream & stream, Node * node, Array< bool > & savedNodeFlags );
-	static void SaveRecurse( IOStream & stream, const Dependencies & dependencies, Array< bool > & savedNodeFlags );
-	bool LoadNode( IOStream & stream );
+    struct NodeWithDistance
+    {
+        inline NodeWithDistance() = default;
+        NodeWithDistance( Node * n, uint32_t dist ) : m_Node( n ), m_Distance( dist ) {}
+        Node *      m_Node;
+        uint32_t    m_Distance;
+    };
+    void FindNearestNodesInternal( const AString & fullPath, Array< NodeWithDistance > & nodes, const uint32_t maxDistance = 5 ) const;
 
-	#if defined( ASSERTS_ENABLED )
-		static bool IsCleanPath( const AString & path );
-	#endif
+    struct UsedFile;
+    bool ReadHeaderAndUsedFiles( IOStream & nodeGraphStream,
+                                 const char* nodeGraphDBFile,
+                                 Array< UsedFile > & files,
+                                 bool & compatibleDB,
+                                 bool & movedDB ) const;
+    uint32_t GetLibEnvVarHash() const;
 
-	enum { NODEMAP_TABLE_SIZE = 65536 };
-	Node *			m_NodeMap[ NODEMAP_TABLE_SIZE ];
-	Array< Node * > m_AllNodes;
-	uint32_t		m_NextNodeIndex;
+    // load/save helpers
+    static void SaveRecurse( IOStream & stream, Node * node, Array< bool > & savedNodeFlags );
+    static void SaveRecurse( IOStream & stream, const Dependencies & dependencies, Array< bool > & savedNodeFlags );
+    bool LoadNode( IOStream & stream );
+    static void SerializeToText( Node * node, uint32_t depth, AString & outBuffer );
+    static void SerializeToText( const char * title, const Dependencies & dependencies, uint32_t depth, AString & outBuffer );
+    static void SerializeToDot( Node * node,
+                                const bool fullGraph,
+                                AString & outBuffer );
+    static void SerializeToDot( const char * dependencyType,
+                                const char * style,
+                                const Node * node,
+                                const Dependencies & dependencies,
+                                const bool fullGraph,
+                                AString & outBuffer );
+    static void SerializeToDot( const Dependencies & dependencies,
+                                const bool fullGraph,
+                                AString & outBuffer );
 
-	Timer m_Timer;
+    // DB Migration
+    void Migrate( const NodeGraph & oldNodeGraph );
+    void MigrateNode( const NodeGraph & oldNodeGraph, Node & newNode, const Node * oldNode );
+    void MigrateProperties( const void * oldBase, void * newBase, const ReflectionInfo * ri );
+    void MigrateProperty( const void * oldBase, void * newBase, const ReflectedProperty & property );
+    static bool AreNodesTheSame( const void * baseA, const void * baseB, const ReflectionInfo * ri );
+    static bool AreNodesTheSame( const void * baseA, const void * baseB, const ReflectedProperty & property );
+    static bool DoDependenciesMatch( const Dependencies & depsA, const Dependencies & depsB );
 
-	// each file used in the generation of the node graph is tracked
-	struct UsedFile
-	{
-		explicit UsedFile( const AString & fileName, uint64_t timeStamp ) : m_FileName( fileName ), m_TimeStamp( timeStamp ), m_Once( false ) {}
-		AString		m_FileName;
-		uint64_t	m_TimeStamp;
-		bool		m_Once;
-	};
-	Array< UsedFile > m_UsedFiles;
+    enum { NODEMAP_TABLE_SIZE = 65536 };
+    Node **         m_NodeMap;
+    Array< Node * > m_AllNodes;
+    uint32_t        m_NextNodeIndex;
 
-	static uint32_t s_BuildPassTag;
+    Timer m_Timer;
+
+    // each file used in the generation of the node graph is tracked
+    struct UsedFile
+    {
+        explicit UsedFile( const AString & fileName, uint64_t timeStamp, uint64_t dataHash ) : m_FileName( fileName ), m_TimeStamp( timeStamp ), m_DataHash( dataHash ) {}
+        AString     m_FileName;
+        uint64_t    m_TimeStamp;
+        uint64_t    m_DataHash;
+    };
+    Array< UsedFile > m_UsedFiles;
+
+    const SettingsNode * m_Settings;
+
+    static uint32_t s_BuildPassTag;
 };
 
 //------------------------------------------------------------------------------
-#endif // FBUILD_GRAPH_NODEGRAPH_H

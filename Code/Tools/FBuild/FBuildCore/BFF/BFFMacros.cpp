@@ -3,8 +3,6 @@
 
 // Includes
 //------------------------------------------------------------------------------
-#include "Tools/FBuild/FBuildCore/PrecompiledHeader.h"
-
 #include "BFFMacros.h"
 #include "Tools/FBuild/FBuildCore/FLog.h"
 
@@ -21,51 +19,60 @@ BFFMacros::BFFMacros()
 
 // DESTRUCTOR
 //------------------------------------------------------------------------------
-BFFMacros::~BFFMacros()
-{
-}
+BFFMacros::~BFFMacros() = default;
 
 // IsDefined
 //------------------------------------------------------------------------------
-bool BFFMacros::IsDefined(const AString& token) const
+bool BFFMacros::IsDefined( const AString & token ) const
 {
-    // user defined tokens :
-    AString *const defined = m_Tokens.Find( token );
-    if ( defined != nullptr )
+    // user defined tokens
+    if ( m_Tokens.Find( token ) )
     {
         return true;
     }
 
-    // fallbacking to predefined tokens :
-    if ( token == "__WINDOWS__" )
-    {
-        #if defined( __WINDOWS__ )
-        return true;
-        #endif
-    }
-    if ( token == "__LINUX__" )
-    {
-        #if defined( __LINUX__ )
-        return true;
-        #endif
-    }
-    if ( token == "__OSX__" )
-    {
-        #if defined( __OSX__ )
-        return true;
-        #endif
-    }
+    // fallback to predefined tokens
+    #if defined( __WINDOWS__ )
+        if ( token == "__WINDOWS__" )
+        {
+            return true;
+        }
+    #endif
+    #if defined( __LINUX__ )
+        if ( token == "__LINUX__" )
+        {
+            return true;
+        }
+    #endif
+    #if defined( __OSX__ )
+        if ( token == "__OSX__" )
+        {
+            return true;
+        }
+    #endif
+    #if defined( __X64__ )
+        if ( token == "__X64__" )
+        {
+            return true;
+        }
+    #endif
+    #if defined( __ARM64__ )
+        if ( token == "__ARM64__" )
+        {
+            return true;
+        }
+    #endif
 
     return false;
 }
 
 // Define
 //------------------------------------------------------------------------------
-bool BFFMacros::Define( const AString& token )
+bool BFFMacros::Define( const AString & token )
 {
     if ( IsDefined( token ) )
     {
-        // trying to overwrite an existing token :
+        // trying to overwrite an existing token
         return false;
     }
     else
@@ -77,9 +84,9 @@ bool BFFMacros::Define( const AString& token )
 
 // Undefine
 //------------------------------------------------------------------------------
-bool BFFMacros::Undefine( const AString& token )
+bool BFFMacros::Undefine( const AString & token )
 {
-    AString *const defined = m_Tokens.Find( token );
+    AString * const defined = m_Tokens.Find( token );
     if ( defined == nullptr )
     {
         // trying to remove an unexisting or predefined token :
