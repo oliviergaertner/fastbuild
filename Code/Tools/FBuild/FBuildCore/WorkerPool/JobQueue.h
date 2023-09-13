@@ -15,6 +15,7 @@
 //------------------------------------------------------------------------------
 class Node;
 class Job;
+class ThreadPool;
 class WorkerThread;
 
 
@@ -44,7 +45,7 @@ private:
 class JobQueue : public Singleton< JobQueue >
 {
 public:
-    explicit JobQueue( uint32_t numWorkerThreads );
+    explicit JobQueue( uint32_t numWorkerThreads, ThreadPool * threadPool );
     ~JobQueue();
 
     // main thread calls these
@@ -66,6 +67,7 @@ public:
 
     void GetJobStats( uint32_t & numJobs, uint32_t & numJobsActive,
                       uint32_t & numJobsDist, uint32_t & numJobsDistActive ) const;
+    bool HasPendingCompletedJobs() const;
 
 private:
     // worker threads call these

@@ -41,7 +41,7 @@ public:
     ObjectNode();
     virtual bool Initialize( NodeGraph & nodeGraph, const BFFToken * iter, const Function * function ) override;
     // simplified remote constructor
-    explicit ObjectNode( const AString & objectName,
+    explicit ObjectNode( AString && objectName,
                          NodeProxy * srcFile,
                          const AString & compilerOptions,
                          uint32_t flags );
@@ -69,13 +69,14 @@ public:
         bool IsCUDANVCC() const                     { return ( ( m_Flags & FLAG_CUDA_NVCC ) != 0 ); }
         bool IsIncludesInStdErr() const             { return ( ( m_Flags & FLAG_INCLUDES_IN_STDERR ) != 0 ); }
         bool IsQtRCC() const                        { return ( ( m_Flags & FLAG_QT_RCC ) != 0 ); }
-        bool IsWarningsAsErrorsMSVC() const         { return ( ( m_Flags & FLAG_QT_RCC ) != 0 ); }
+        bool IsWarningsAsErrorsMSVC() const         { return ( ( m_Flags & FLAG_WARNINGS_AS_ERRORS_MSVC ) != 0 ); }
         bool IsVBCC() const                         { return ( ( m_Flags & FLAG_VBCC ) != 0 ); }
         bool IsUsingStaticAnalysisMSVC() const      { return ( ( m_Flags & FLAG_STATIC_ANALYSIS_MSVC ) != 0 ); }
         bool IsOrbisWavePSSLC() const               { return ( ( m_Flags & FLAG_ORBIS_WAVE_PSSLC ) != 0 ); }
         bool IsDiagnosticsColorAuto() const         { return ( ( m_Flags & FLAG_DIAGNOSTICS_COLOR_AUTO ) != 0 ); }
         bool IsWarningsAsErrorsClangGCC() const     { return ( ( m_Flags & FLAG_WARNINGS_AS_ERRORS_CLANGGCC ) != 0 ); }
         bool IsClangCl() const                      { return ( ( m_Flags & FLAG_CLANG_CL ) != 0 ); }
+        bool IsUsingGcovCoverage() const            { return ( ( m_Flags & FLAG_GCOV_COVERAGE ) != 0 ); }
 
         enum Flag : uint32_t
         {
@@ -103,6 +104,7 @@ public:
             FLAG_DIAGNOSTICS_COLOR_AUTO         = 0x800000,
             FLAG_WARNINGS_AS_ERRORS_CLANGGCC    = 0x1000000,
             FLAG_CLANG_CL                       = 0x2000000,
+            FLAG_GCOV_COVERAGE                  = 0x4000000,
         };
 
         void Set( Flag flag )       { m_Flags |= flag; }
@@ -142,6 +144,7 @@ public:
     bool IsUsingStaticAnalysisMSVC() const  { return m_CompilerFlags.IsUsingStaticAnalysisMSVC(); }
     bool IsOrbisWavePSSLC() const           { return m_CompilerFlags.IsOrbisWavePSSLC(); }
     bool IsWarningsAsErrorsClangGCC() const { return m_CompilerFlags.IsWarningsAsErrorsClangGCC(); }
+    bool IsUsingGcovCoverage() const        { return m_CompilerFlags.IsUsingGcovCoverage(); }
 
     virtual void SaveRemote( IOStream & stream ) const override;
     static Node * LoadRemote( IOStream & stream );
@@ -156,6 +159,7 @@ public:
 
     void GetPDBName( AString & pdbName ) const;
     void GetNativeAnalysisXMLPath( AString& outXMLFileName ) const;
+    void GetGCNOPath( AString & gcnoFileName ) const;
 
     const char * GetObjExtension() const;
 

@@ -43,10 +43,11 @@
 // Core
 #include "Core/Containers/Array.h"
 #include "Core/Env/Env.h"
+#include "Core/FileIO/ConstMemoryStream.h"
 #include "Core/FileIO/FileIO.h"
 #include "Core/FileIO/IOStream.h"
 #include "Core/FileIO/PathUtils.h"
-#include "Core/Math/CRC32.h"
+#include "Core/Math/xxHash.h"
 #include "Core/Process/Atomic.h"
 #include "Core/Process/Mutex.h"
 #include "Core/Profile/Profile.h"
@@ -121,12 +122,9 @@ REFLECT_END( Node )
 
 // CONSTRUCTOR
 //------------------------------------------------------------------------------
-Node::Node( const AString & name, Type type, uint8_t controlFlags )
+Node::Node( Type type )
 {
     m_Type = type;
-    m_ControlFlags = controlFlags;
-
-    SetName( name );
 
     // Compile time check to ensure name vector is in sync
     static_assert( sizeof( s_NodeTypeNames ) / sizeof(const char *) == NUM_NODE_TYPES, "s_NodeTypeNames item count doesn't match NUM_NODE_TYPES" );
@@ -138,14 +136,14 @@ Node::~Node() = default;
 
 // DoDynamicDependencies
 //------------------------------------------------------------------------------
-/*virtual*/ bool Node::DoDynamicDependencies( NodeGraph &, bool )
+/*virtual*/ bool Node::DoDynamicDependencies( NodeGraph & /*nodeGraph*/ )
 {
     return true;
 }
 
-// DetermineNeedToBuild
+// DetermineNeedToBuildStatic
 //------------------------------------------------------------------------------
-bool Node::DetermineNeedToBuild( const Dependencies & deps ) const
+/*virtual*/ bool Node::DetermineNeedToBuildStatic() const
 {
     // Some nodes (like File and Directory) always build as they represent external state
     // that can be modified before the build is run
@@ -163,6 +161,7 @@ bool Node::DetermineNeedToBuild( const Dependencies & deps ) const
         return true;
     }
 
+    // Handle missing or modified files
     if ( IsAFile() )
     {
         const uint64_t lastWriteTime = FileIO::GetFileLastWriteTime( m_Name );
@@ -183,7 +182,26 @@ bool Node::DetermineNeedToBuild( const Dependencies & deps ) const
         }
     }
 
-    // static deps
+    // Check if anything we statically depend on has changed
+    return DetermineNeedToBuild( m_StaticDependencies );
+}
+
+// DetermineNeedToBuildDynamic
+//------------------------------------------------------------------------------
+/*virtual*/ bool Node::DetermineNeedToBuildDynamic() const
+{
+    // Should never be called if DetermineNeedToBuildStatic would trigger a build
+    ASSERT( ( m_ControlFlags & FLAG_ALWAYS_BUILD ) == 0 );
+    ASSERT( m_Stamp != 0 );
+
+    // Check if anything we dynamically depend on has changed
+    return DetermineNeedToBuild( m_DynamicDependencies );
+}
+
+// DetermineNeedToBuild
+//------------------------------------------------------------------------------
+bool Node::DetermineNeedToBuild( const Dependencies & deps ) const
+{
     for ( const Dependency & dep : deps )
     {
         // Weak dependencies don't cause rebuilds
@@ -306,68 +324,22 @@ void Node::SetLastBuildTime( uint32_t ms )
     AtomicStoreRelaxed( &m_LastBuildTimeMs, ms );
 }
 
-// CreateNode
-//------------------------------------------------------------------------------
-/*static*/ Node * Node::CreateNode( NodeGraph & nodeGraph, Node::Type nodeType, const AString & name )
-{
-    switch ( nodeType )
-    {
-        case Node::PROXY_NODE:          ASSERT( false ); return nullptr;
-        case Node::COPY_FILE_NODE:      return nodeGraph.CreateCopyFileNode( name );
-        case Node::DIRECTORY_LIST_NODE: return nodeGraph.CreateDirectoryListNode( name );
-        case Node::EXEC_NODE:           return nodeGraph.CreateExecNode( name );
-        case Node::FILE_NODE:           return nodeGraph.CreateFileNode( name );
-        case Node::LIBRARY_NODE:        return nodeGraph.CreateLibraryNode( name );
-        case Node::OBJECT_NODE:         return nodeGraph.CreateObjectNode( name );
-        case Node::ALIAS_NODE:          return nodeGraph.CreateAliasNode( name );
-        case Node::EXE_NODE:            return nodeGraph.CreateExeNode( name );
-        case Node::CS_NODE:             return nodeGraph.CreateCSNode( name );
-        case Node::UNITY_NODE:          return nodeGraph.CreateUnityNode( name );
-        case Node::TEST_NODE:           return nodeGraph.CreateTestNode( name );
-        case Node::COMPILER_NODE:       return nodeGraph.CreateCompilerNode( name );
-        case Node::DLL_NODE:            return nodeGraph.CreateDLLNode( name );
-        case Node::VCXPROJECT_NODE:     return nodeGraph.CreateVCXProjectNode( name );
-        case Node::VSPROJEXTERNAL_NODE: return nodeGraph.CreateVSProjectExternalNode( name );
-        case Node::OBJECT_LIST_NODE:    return nodeGraph.CreateObjectListNode( name );
-        case Node::COPY_DIR_NODE:       return nodeGraph.CreateCopyDirNode( name );
-        case Node::SLN_NODE:            return nodeGraph.CreateSLNNode( name );
-        case Node::REMOVE_DIR_NODE:     return nodeGraph.CreateRemoveDirNode( name );
-        case Node::XCODEPROJECT_NODE:   return nodeGraph.CreateXCodeProjectNode( name );
-        case Node::SETTINGS_NODE:       return nodeGraph.CreateSettingsNode( name );
-        case Node::TEXT_FILE_NODE:      return nodeGraph.CreateTextFileNode( name );
-        case Node::LIST_DEPENDENCIES_NODE: return nodeGraph.CreateListDependenciesNode( name );
-        case Node::NUM_NODE_TYPES:      ASSERT( false ); return nullptr;
-    }
-
-    #if defined( __GNUC__ ) || defined( _MSC_VER )
-        // GCC and incorrectly reports reaching end of non-void function (as of GCC 7.3.0)
-        // MSVC incorrectly reports reaching end of non-void function (as of VS 2017)
-        return nullptr;
-    #endif
-}
-
 // Load
 //------------------------------------------------------------------------------
-/*static*/ Node * Node::Load( NodeGraph & nodeGraph, IOStream & stream )
+/*static*/ Node * Node::Load( NodeGraph & nodeGraph, ConstMemoryStream & stream )
 {
     // read type
     uint8_t nodeType;
-    if ( stream.Read( nodeType ) == false )
-    {
-        return nullptr;
-    }
+    VERIFY( stream.Read( nodeType ) );
 
     PROFILE_SECTION( Node::GetTypeName( (Type)nodeType ) );
 
     // Name of node
-    AStackString<> name;
-    if ( stream.Read( name ) == false )
-    {
-        return nullptr;
-    }
+    AString name;
+    VERIFY( stream.Read( name ) );
 
     // Create node
-    Node * n = CreateNode( nodeGraph, (Type)nodeType, name );
+    Node * n = nodeGraph.CreateNode( (Type)nodeType, Move( name ) );
     ASSERT( n );
 
     // Early out for FileNode
@@ -378,38 +350,35 @@ void Node::SetLastBuildTime( uint32_t ms )
 
     // Read stamp
     uint64_t stamp;
-    if ( stream.Read( stamp ) == false )
-    {
-        return nullptr;
-    }
+    VERIFY( stream.Read( stamp ) );
 
     // Build time
     uint32_t lastTimeToBuild;
-    if ( stream.Read( lastTimeToBuild ) == false )
-    {
-        return nullptr;
-    }
-    n->SetLastBuildTime( lastTimeToBuild );    
-
-    // Dependencies
-    if ( ( n->m_PreBuildDependencies.Load( nodeGraph, stream ) == false ) ||
-         ( n->m_StaticDependencies.Load( nodeGraph, stream ) == false ) ||
-         ( n->m_DynamicDependencies.Load( nodeGraph, stream ) == false ) )
-    {
-        return nullptr;
-    }
+    VERIFY( stream.Read( lastTimeToBuild ) );
+    n->SetLastBuildTime( lastTimeToBuild );
 
     // Deserialize properties
-    if ( Deserialize( stream, n, *n->GetReflectionInfoV() ) == false )
-    {
-        return nullptr;
-    }
-
-    n->PostLoad( nodeGraph ); // TODO:C Eliminate the need for this
+    Deserialize( stream, n, *n->GetReflectionInfoV() );
 
     // set stamp
     n->m_Stamp = stamp;
     return n;
+}
+
+// LoadDependencies
+//------------------------------------------------------------------------------
+/*static*/ void Node::LoadDependencies( NodeGraph & nodeGraph, Node * node, ConstMemoryStream & stream )
+{
+    // Early out for FileNode
+    if ( node->GetType() == Node::FILE_NODE )
+    {
+        return;
+    }
+
+    // Dependencies
+    node->m_PreBuildDependencies.Load( nodeGraph, stream );
+    node->m_StaticDependencies.Load( nodeGraph, stream );
+    node->m_DynamicDependencies.Load( nodeGraph, stream );
 }
 
 // PostLoad
@@ -431,14 +400,10 @@ void Node::SetLastBuildTime( uint32_t ms )
     // Save Name
     stream.Write( node->m_Name );
 
-    #if defined( DEBUG )
-        node->MarkAsSaved();
-    #endif
-
     // FileNodes don't need most things serialized:
-    // - they have no dependencies (they are leaf nodes)
-    // - they take sub 1ms to check, so don't need their build time saved
     // - their stamp is obtained every build, so doesn't need saving
+    // - they take sub 1ms to check, so don't need their build time saved
+    // - they have no reflected properties
     if ( nodeType == Node::FILE_NODE )
     {
         return;
@@ -451,15 +416,26 @@ void Node::SetLastBuildTime( uint32_t ms )
     // Build time
     const uint32_t lastBuildTime = node->GetLastBuildTime();
     stream.Write( lastBuildTime );
-    
-    // Deps
-    node->m_PreBuildDependencies.Save( stream );
-    node->m_StaticDependencies.Save( stream );
-    node->m_DynamicDependencies.Save( stream );
 
     // Properties
     const ReflectionInfo * const ri = node->GetReflectionInfoV();
     Serialize( stream, node, *ri );
+}
+
+// SaveDependencies
+//------------------------------------------------------------------------------
+/*static*/ void Node::SaveDependencies( IOStream & stream, const Node * node )
+{
+    // FileNodes have no dependencies
+    if ( node->GetType() == Node::FILE_NODE )
+    {
+        return;
+    }
+
+    // Deps
+    node->m_PreBuildDependencies.Save( stream );
+    node->m_StaticDependencies.Save( stream );
+    node->m_DynamicDependencies.Save( stream );
 }
 
 // LoadRemote
@@ -615,7 +591,7 @@ void Node::SetLastBuildTime( uint32_t ms )
 
 // Deserialize
 //------------------------------------------------------------------------------
-/*static*/ bool Node::Deserialize( IOStream & stream, void * base, const ReflectionInfo & ri )
+/*static*/ void Node::Deserialize( ConstMemoryStream & stream, void * base, const ReflectionInfo & ri )
 {
     const ReflectionInfo * currentRI = &ri;
     do
@@ -624,17 +600,12 @@ void Node::SetLastBuildTime( uint32_t ms )
         for ( ReflectionIter it = currentRI->Begin(); it != end; ++it )
         {
             const ReflectedProperty & property = *it;
-            if ( !Deserialize( stream, base, property ) )
-            {
-                return false;
-            }
+            Deserialize( stream, base, property );
         }
 
         currentRI = currentRI->GetSuperClass();
     }
     while ( currentRI );
-
-    return true;
 }
 
 // Migrate
@@ -650,7 +621,7 @@ void Node::SetLastBuildTime( uint32_t ms )
 
 // Deserialize
 //------------------------------------------------------------------------------
-/*static*/ bool Node::Deserialize( IOStream & stream, void * base, const ReflectedProperty & property )
+/*static*/ void Node::Deserialize( ConstMemoryStream & stream, void * base, const ReflectedProperty & property )
 {
     const PropertyType pt = property.GetType();
     switch ( pt )
@@ -660,70 +631,49 @@ void Node::SetLastBuildTime( uint32_t ms )
             if ( property.IsArray() )
             {
                 Array< AString > * arrayOfStrings = property.GetPtrToArray<AString>( base );
-                if ( stream.Read( *arrayOfStrings ) == false )
-                {
-                    return false;
-                }
+                VERIFY( stream.Read( *arrayOfStrings ) );
             }
             else
             {
                 AString * string = property.GetPtrToProperty<AString>( base );
-                if ( stream.Read( *string ) == false )
-                {
-                    return false;
-                }
+                VERIFY( stream.Read( *string ) );
             }
-            return true;
+            return;
         }
         case PT_BOOL:
         {
             bool b( false );
-            if ( stream.Read( b ) == false )
-            {
-                return false;
-            }
+            VERIFY( stream.Read( b ) );
             property.SetProperty( base, b );
-            return true;
+            return;
         }
         case PT_UINT8:
         {
             uint8_t u8( 0 );
-            if ( stream.Read( u8 ) == false )
-            {
-                return false;
-            }
+            VERIFY( stream.Read( u8 ) );
             property.SetProperty( base, u8 );
-            return true;
+            return;
         }
         case PT_INT32:
         {
             int32_t i32( 0 );
-            if ( stream.Read( i32 ) == false )
-            {
-                return false;
-            }
+            VERIFY( stream.Read( i32 ) );
             property.SetProperty( base, i32 );
-            return true;
+            return;
         }
         case PT_UINT32:
         {
             uint32_t u32( 0 );
-            if ( stream.Read( u32 ) == false )
-            {
-                return false;
-            }
+            VERIFY( stream.Read( u32 ) );
             property.SetProperty( base, u32 );
-            return true;
+            return;
         }
         case PT_UINT64:
         {
             uint64_t u64( 0 );
-            if ( stream.Read( u64 ) == false )
-            {
-                return false;
-            }
+            VERIFY( stream.Read( u64 ) );
             property.SetProperty( base, u64 );
-            return true;
+            return;
         }
         case PT_STRUCT:
         {
@@ -733,28 +683,23 @@ void Node::SetLastBuildTime( uint32_t ms )
             {
                 // Read number of elements
                 uint32_t numElements( 0 );
-                if ( stream.Read( numElements ) == false )
-                {
-                    return false;
-                }
+                VERIFY( stream.Read( numElements ) );
                 propertyS.ResizeArrayOfStruct( base, numElements );
 
                 // Read each element
                 for ( uint32_t i=0; i<numElements; ++i )
                 {
                     void * structBase = propertyS.GetStructInArray( base, (size_t)i );
-                    if ( Deserialize( stream, structBase, *propertyS.GetStructReflectionInfo() ) == false )
-                    {
-                        return false;
-                    }
+                    Deserialize( stream, structBase, *propertyS.GetStructReflectionInfo() );
                 }
-                return true;
+                return;
             }
             else
             {
                 const ReflectionInfo * structRI = propertyS.GetStructReflectionInfo();
                 void * structBase = propertyS.GetStructBase( base );
-                return Deserialize( stream, structBase, *structRI );
+                Deserialize( stream, structBase, *structRI );
+                return;
             }
         }
         default:
@@ -764,15 +709,14 @@ void Node::SetLastBuildTime( uint32_t ms )
     }
 
     ASSERT( false ); // Unsupported type
-    return false;
 }
 
 // SetName
 //------------------------------------------------------------------------------
-void Node::SetName( const AString & name )
+void Node::SetName( AString && name )
 {
-    m_Name = name;
-    m_NameCRC = CRC32::CalcLower( name );
+    m_NameHash = CalcNameHash( name );
+    m_Name = Move( name );
 }
 
 // ReplaceDummyName
@@ -1101,6 +1045,74 @@ void Node::ReplaceDummyName( const AString & newName )
     NodeGraph::CleanPath( path, outFixedPath );
 }
 
+// CalcNameHash
+//------------------------------------------------------------------------------
+/*static*/ uint32_t Node::CalcNameHash( const AString & name )
+{
+    // xxHash3 returns a 64 bit hash and we use the lower 32 bits
+    AStackString<> nameLower( name );
+    nameLower.ToLower();
+    return static_cast<uint32_t>( xxHash3::Calc64( nameLower ) );
+}
+
+// CleanMessageToPreventMSBuildFailure
+//------------------------------------------------------------------------------
+/*static*/ void Node::CleanMessageToPreventMSBuildFailure( const AString & msg, AString & outMsg )
+{
+    // Search for patterns that MSBuild detects and treats as errors:
+    //
+    //   <error|warning> <errorCode>: <message>
+    //
+    // and remove the colon so they are no longer detected:
+    //
+    //   <error|warning> <errorCode> <message>
+    //
+    // These can be anywhere in the string, and are case and whitespace insensitive
+    const char * pos = msg.Get();
+    for ( ;; )
+    {
+        const char * startPos = pos;
+
+        // Look for error or warning
+        const char * tokenPos = msg.FindI( "error ", pos );
+        tokenPos = tokenPos ? tokenPos : msg.FindI( "warning ", pos );
+        if ( tokenPos == nullptr )
+        {
+            outMsg.Append( startPos, msg.GetEnd() ); // Add rest of string
+            return;
+        }
+
+        pos = tokenPos; // Advance to token
+
+        // skip past the token
+        while ( AString::IsLetter( *pos ) )     { ++pos; }
+        while ( AString::IsWhitespace( *pos ) ) { ++pos; }
+
+        // skip error code
+        while ( AString::IsLetter( *pos ) || AString::IsNumber( *pos ) )
+        {
+            ++pos;
+        }
+        while ( AString::IsWhitespace( *pos ) ) { ++pos; }
+
+        // Add everything to here including the token
+        outMsg.Append( startPos, pos );
+
+        // colon?
+        if ( *pos != ':' )
+        {
+            // Keep searching. We need to check all possible instances
+            // of the token because it can appear multiple times
+            continue;
+        }
+
+        // Replace colon
+        outMsg += ' ';
+        ++pos;
+        continue; // Keep searching
+    }
+}
+
 // InitializePreBuildDependencies
 //------------------------------------------------------------------------------
 bool Node::InitializePreBuildDependencies( NodeGraph & nodeGraph, const BFFToken * iter, const Function * function, const Array< AString > & preBuildDependencyNames )
@@ -1133,18 +1145,18 @@ bool Node::InitializePreBuildDependencies( NodeGraph & nodeGraph, const BFFToken
         // No - return build-wide environment
         return FBuild::IsValid() ? FBuild::Get().GetEnvironmentString() : nullptr;
     }
-    
+
     // More than one caller could be retrieving the same env string
     // in some cases. For simplicity, we protect in all cases even
     // if we could avoid it as the mutex will not be heavily constested.
     MutexHolder mh( g_NodeEnvStringMutex );
-    
+
     // If we've previously built a custom env string, use it
     if ( inoutCachedEnvString )
     {
         return inoutCachedEnvString;
     }
-    
+
     // Caller owns the memory
     inoutCachedEnvString = Env::AllocEnvironmentString( envVars );
     return inoutCachedEnvString;
@@ -1155,14 +1167,14 @@ bool Node::InitializePreBuildDependencies( NodeGraph & nodeGraph, const BFFToken
 void Node::RecordStampFromBuiltFile()
 {
     m_Stamp = FileIO::GetFileLastWriteTime( m_Name );
-    
+
     // An external tool might fail to write a file. Higher level code checks for
     // that (see "missing despite success"), so we don't need to do anything here.
     if ( m_Stamp == 0 )
     {
         return;
     }
-    
+
     // On OS X, the 'ar' tool (for making libraries) appears to clamp the
     // modification time of libraries to whole seconds. On HFS/HFS+ file systems,
     // this doesn't matter because the resolution of the file system is 1 second.
@@ -1191,7 +1203,7 @@ void Node::RecordStampFromBuiltFile()
             {
                 // Set to current time
                 FileIO::SetFileLastWriteTimeToNow( m_Name );
-                
+
                 // Re-query the time from the file
                 m_Stamp = FileIO::GetFileLastWriteTime( m_Name );
                 ASSERT( m_Stamp != 0 );

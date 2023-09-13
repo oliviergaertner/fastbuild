@@ -142,7 +142,7 @@ bool UnityNode::UnityFileAndOrigin::operator < ( const UnityFileAndOrigin & othe
 // CONSTRUCTOR
 //------------------------------------------------------------------------------
 UnityNode::UnityNode()
-    : Node( AString::GetEmpty(), Node::UNITY_NODE, Node::FLAG_NONE )
+    : Node( Node::UNITY_NODE )
     , m_InputPathRecurse( true )
     , m_InputPattern( 1, true )
     , m_Files( 0, true )
@@ -217,10 +217,10 @@ UnityNode::UnityNode()
     }
 
     ASSERT( m_StaticDependencies.IsEmpty() );
-    m_StaticDependencies.Append( dirNodes );
-    m_StaticDependencies.Append( objectListNodes );
-    m_StaticDependencies.Append( fileNodes );
-    m_StaticDependencies.Append( isolateFileListNodes );
+    m_StaticDependencies.Add( dirNodes );
+    m_StaticDependencies.Add( objectListNodes );
+    m_StaticDependencies.Add( fileNodes );
+    m_StaticDependencies.Add( isolateFileListNodes );
 
     return true;
 }
@@ -239,9 +239,9 @@ UnityNode::~UnityNode()
 }
 
 
-// DetermineNeedToBuild
+// DetermineNeedToBuildStatic
 //------------------------------------------------------------------------------
-/*virtual*/ bool UnityNode::DetermineNeedToBuild( const Dependencies & deps ) const
+/*virtual*/ bool UnityNode::DetermineNeedToBuildStatic() const
 {
     // Of IsolateWriteableFiles is enabled and files come from a directory list
     // then we'll be triggered for a build and don't need any special logic.
@@ -276,7 +276,7 @@ UnityNode::~UnityNode()
         return true;
     }
 
-    return Node::DetermineNeedToBuild( deps );
+    return Node::DetermineNeedToBuildStatic();
 }
 
 // DoBuild
@@ -330,7 +330,9 @@ UnityNode::~UnityNode()
     const float numFilesPerUnity = (float)numFiles / (float)m_NumUnityFilesToCreate;
     float remainingInThisUnity( 0.0 );
 
-    uint32_t numFilesWritten( 0 );
+    #if defined(ASSERTS_ENABLED)
+        uint32_t numFilesWritten( 0 );
+    #endif
 
     size_t index = 0;
 
@@ -421,7 +423,9 @@ UnityNode::~UnityNode()
 
             // count the file, whether we wrote it or not, to keep unity files stable
             index++;
-            numFilesWritten++;
+            #if defined(ASSERTS_ENABLED)
+                numFilesWritten++;
+            #endif
         }
 
         // write allocation of includes for this unity file
@@ -510,7 +514,7 @@ UnityNode::~UnityNode()
             m_UnityFileNames.Append( unityName );
         }
 
-        stamps.Append( xxHash::Calc64( output.Get(), output.GetLength() ) );
+        stamps.Append( xxHash3::Calc64( output.Get(), output.GetLength() ) );
 
         // need to write the unity file?
         bool needToWrite = false;
@@ -580,7 +584,7 @@ UnityNode::~UnityNode()
 
     // Calculate final hash to represent generation of Unity files
     ASSERT( stamps.GetSize() == m_NumUnityFilesToCreate );
-    m_Stamp = xxHash::Calc64( &stamps[ 0 ], stamps.GetSize() * sizeof( uint64_t ) );
+    m_Stamp = xxHash3::Calc64( &stamps[ 0 ], stamps.GetSize() * sizeof( uint64_t ) );
 
     // Track "nounity" status in the lest significant bit
     if (noUnity)
@@ -802,7 +806,7 @@ bool UnityNode::GetIsolatedFilesFromList( Array< AString > & files ) const
     {
         return true; // No list specified so option is disabled
     }
-    
+
     // Open file
     FileStream input;
     if ( input.Open( m_IsolateListFile.Get() ) == false )

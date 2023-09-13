@@ -28,6 +28,7 @@
 #include "Core/FileIO/FileIO.h"
 #include "Core/Network/NetworkStartupHelper.h"
 #include "Core/Process/Process.h"
+#include "Core/Process/Thread.h"
 #include "Core/Profile/Profile.h"
 #include "Core/Strings/AStackString.h"
 #include "Core/Tracing/Tracing.h"
@@ -40,8 +41,9 @@
 
 // CONSTRUCTOR
 //------------------------------------------------------------------------------
-Worker::Worker( const AString & args, bool consoleMode )
+Worker::Worker( const AString & args, bool consoleMode, bool periodicRestart )
     : m_ConsoleMode( consoleMode )
+    , m_PeriodicRestart( periodicRestart )
     , m_MainWindow( nullptr )
     , m_ConnectionPool( nullptr )
     , m_NetworkStartupHelper( nullptr )
@@ -132,11 +134,8 @@ int32_t Worker::Work()
     }
 
     // spawn work thread
-    m_WorkThread = Thread::CreateThread( &WorkThreadWrapper,
-                                         "WorkerThread",
-                                         ( 256 * KILOBYTE ),
-                                         this );
-    ASSERT( m_WorkThread != INVALID_THREAD_HANDLE );
+    Thread workThread;
+    workThread.Start( &WorkThreadWrapper, "WorkerThread", this, ( 256 * KILOBYTE ) );
 
     // Run the UI message loop if we're not in console mode
     if ( m_MainWindow )
@@ -145,7 +144,7 @@ int32_t Worker::Work()
     }
 
     // Join work thread and get exit code
-    return Thread::WaitForThread( m_WorkThread );
+    return static_cast<int32_t>( workThread.Join() );
 }
 
 // WorkThreadWrapper
@@ -209,7 +208,7 @@ uint32_t Worker::WorkThread()
 
         UpdateUI();
 
-        CheckForExeUpdate();
+        CheckIfRestartNeeded();
 
         PROFILE_SYNCHRONIZE
 
@@ -243,7 +242,7 @@ bool Worker::HasEnoughDiskSpace()
         }
         m_TimerLastDiskSpaceCheck.Start();
 
-        static constexpr uint64_t MIN_DISK_SPACE = 1024 * 1024 * 1024; // 1 GiB
+        constexpr uint64_t MIN_DISK_SPACE = 1024 * 1024 * 1024; // 1 GiB
 
         uint64_t freeBytesAvailable = 0;
         uint64_t totalNumberOfBytes = 0;
@@ -279,17 +278,17 @@ bool Worker::HasEnoughMemory()
             return ( m_LastMemoryCheckResult != 0 );
         }
         m_TimerLastMemoryCheck.Start();
-    
+
         PERFORMANCE_INFORMATION memInfo;
         memInfo.cb = sizeof( memInfo );
         if ( GetPerformanceInfo( &memInfo, sizeof( memInfo ) ) )
         {
             const uint64_t limitMemSize = memInfo.CommitLimit * memInfo.PageSize;
             const uint64_t currentMemSize = memInfo.CommitTotal * memInfo.PageSize;
-    
+
             // Calculate the free memory in MiB.
             const uint64_t freeMemSize = ( limitMemSize - currentMemSize ) / MEGABYTE;
-    
+
             // Check if the free memory is high enough
             const WorkerSettings & ws = WorkerSettings::Get();
             if ( freeMemSize > ws.GetMinimumFreeMemoryMiB() )
@@ -298,7 +297,7 @@ bool Worker::HasEnoughMemory()
                 return true;
             }
         }
-    
+
         // The machine doesn't have enough memory or query failed. Exclude this machine from worker pool.
         m_LastMemoryCheckResult = 0;
         return false;
@@ -434,9 +433,9 @@ void Worker::UpdateUI()
     m_UIUpdateTimer.Start();
 }
 
-// CheckForExeUpdate
+// CheckIfRestartNeeded
 //------------------------------------------------------------------------------
-void Worker::CheckForExeUpdate()
+void Worker::CheckIfRestartNeeded()
 {
     PROFILE_FUNCTION;
 
@@ -455,6 +454,18 @@ void Worker::CheckForExeUpdate()
     if ( m_BaseExeName.IsEmpty() )
     {
         return; // not running as a copy to allow restarts
+    }
+
+    // Check if periodic restart time has been reached
+    if ( m_PeriodicRestart )
+    {
+        const float periodicRestartSecs = ( 4.0f * 60.0f * 60.0f ); // 4 hours
+        if ( m_PeriodicRestartTimer.GetElapsed() > periodicRestartSecs )
+        {
+            m_RestartNeeded = true;
+            JobQueueRemote::Get().SignalStopWorkers();
+            return;
+        }
     }
 
     // get the current last write time

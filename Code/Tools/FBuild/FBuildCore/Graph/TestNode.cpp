@@ -43,7 +43,7 @@ REFLECT_END( TestNode )
 // CONSTRUCTOR
 //------------------------------------------------------------------------------
 TestNode::TestNode()
-    : FileNode( AString::GetEmpty(), Node::FLAG_NONE )
+    : FileNode()
     , m_TestExecutable()
     , m_TestArguments()
     , m_TestWorkingDir()
@@ -103,9 +103,9 @@ TestNode::TestNode()
 
     // Store Static Dependencies
     m_StaticDependencies.SetCapacity( 1 + m_NumTestInputFiles + testInputPaths.GetSize() );
-    m_StaticDependencies.Append( executable );
-    m_StaticDependencies.Append( testInputFiles );
-    m_StaticDependencies.Append( testInputPaths );
+    m_StaticDependencies.Add( executable );
+    m_StaticDependencies.Add( testInputFiles );
+    m_StaticDependencies.Add( testInputPaths );
 
     return true;
 }
@@ -126,7 +126,7 @@ const char * TestNode::GetEnvironmentString() const
 
 // DoDynamicDependencies
 //------------------------------------------------------------------------------
-/*virtual*/ bool TestNode::DoDynamicDependencies( NodeGraph & nodeGraph, bool /*forceClean*/ )
+/*virtual*/ bool TestNode::DoDynamicDependencies( NodeGraph & nodeGraph )
 {
     // clear dynamic deps from previous passes
     m_DynamicDependencies.Clear();
@@ -150,7 +150,7 @@ const char * TestNode::GetEnvironmentString() const
             Node * sn = nodeGraph.FindNode( file.m_Name );
             if ( sn == nullptr )
             {
-                sn = nodeGraph.CreateFileNode( file.m_Name );
+                sn = nodeGraph.CreateNode<FileNode>( file.m_Name );
             }
             else if ( sn->IsAFile() == false )
             {
@@ -158,7 +158,7 @@ const char * TestNode::GetEnvironmentString() const
                 return false;
             }
 
-            m_DynamicDependencies.EmplaceBack( sn );
+            m_DynamicDependencies.Add( sn );
         }
         continue;
     }

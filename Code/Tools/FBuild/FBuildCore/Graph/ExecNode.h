@@ -23,8 +23,8 @@ public:
     static inline Node::Type GetTypeS() { return Node::EXEC_NODE; }
 
 private:
-    virtual bool DoDynamicDependencies( NodeGraph & nodeGraph, bool forceClean ) override;
-    virtual bool DetermineNeedToBuild( const Dependencies & deps ) const override;
+    virtual bool DoDynamicDependencies( NodeGraph & nodeGraph ) override;
+    virtual bool DetermineNeedToBuildStatic() const override;
     virtual BuildResult DoBuild( Job * job ) override;
 
     const FileNode * GetExecutable() const { return m_StaticDependencies[0].GetNode()->CastTo< FileNode >(); }
@@ -49,9 +49,11 @@ private:
     bool                m_ExecAlways;
     bool                m_ExecInputPathRecurse;
     Array< AString >    m_PreBuildDependencyNames;
+    Array< AString >    m_Environment;
 
     // Internal State
     uint32_t            m_NumExecInputFiles;
+    mutable const char * m_EnvironmentString        = nullptr;
 };
 
 //------------------------------------------------------------------------------

@@ -29,7 +29,7 @@ REFLECT_END( CopyDirNode )
 // CONSTRUCTOR
 //------------------------------------------------------------------------------
 CopyDirNode::CopyDirNode()
-: Node( AString::GetEmpty(), Node::COPY_DIR_NODE, Node::FLAG_NONE )
+    : Node( Node::COPY_DIR_NODE )
 {
 }
 
@@ -64,7 +64,7 @@ CopyDirNode::CopyDirNode()
 
     // Store dependencies
     m_StaticDependencies.SetCapacity( sourcePaths.GetSize() );
-    m_StaticDependencies.Append( sourcePaths );
+    m_StaticDependencies.Add( sourcePaths );
 
     return true;
 }
@@ -82,10 +82,8 @@ CopyDirNode::~CopyDirNode() = default;
 
 // DoDynamicDependencies
 //------------------------------------------------------------------------------
-/*virtual*/ bool CopyDirNode::DoDynamicDependencies( NodeGraph & nodeGraph, bool forceClean )
+/*virtual*/ bool CopyDirNode::DoDynamicDependencies( NodeGraph & nodeGraph )
 {
-    (void)forceClean; // dynamic deps are always re-added here, so this is meaningless
-
     m_DynamicDependencies.Clear();
 
     ASSERT( !m_StaticDependencies.IsEmpty() );
@@ -97,13 +95,10 @@ CopyDirNode::~CopyDirNode() = default;
     }
 
     // Iterate all the DirectoryListNodes
-    const Dependency * const depEnd = m_StaticDependencies.End();
-    for ( const Dependency * dep = m_StaticDependencies.Begin();
-          dep != depEnd;
-          ++dep )
+    for ( const Dependency & dep : m_StaticDependencies )
     {
         // Grab the files
-        const DirectoryListNode * dln = dep->GetNode()->CastTo< DirectoryListNode >();
+        const DirectoryListNode * dln = dep.GetNode()->CastTo< DirectoryListNode >();
         const Array< FileIO::FileInfo > & files = dln->GetFiles();
         const FileIO::FileInfo * const fEnd = files.End();
         for ( const FileIO::FileInfo * fIt = files.Begin();
@@ -122,7 +117,7 @@ CopyDirNode::~CopyDirNode() = default;
             Node * srcFileNode = nodeGraph.FindNode( srcFile );
             if ( srcFileNode == nullptr )
             {
-                srcFileNode = nodeGraph.CreateFileNode( srcFile );
+                srcFileNode = nodeGraph.CreateNode<FileNode>( srcFile );
             }
             else if ( srcFileNode->IsAFile() == false )
             {
@@ -138,7 +133,7 @@ CopyDirNode::~CopyDirNode() = default;
             Node * n = nodeGraph.FindNode( dstFile );
             if ( n == nullptr )
             {
-                CopyFileNode * copyFileNode = nodeGraph.CreateCopyFileNode( dstFile );
+                CopyFileNode * copyFileNode = nodeGraph.CreateNode<CopyFileNode>( dstFile );
                 copyFileNode->m_Source = srcFileNode->GetName();
                 copyFileNode->m_PreBuildDependencyNames = preBuildDependencyNames; // inherit PreBuildDependencies
                 const BFFToken * token = nullptr;
@@ -169,7 +164,7 @@ CopyDirNode::~CopyDirNode() = default;
                 }
             }
 
-            m_DynamicDependencies.EmplaceBack( n );
+            m_DynamicDependencies.Add( n );
         }
     }
     return true;
@@ -193,7 +188,7 @@ CopyDirNode::~CopyDirNode() = default;
             ASSERT( cn->GetStamp() );
             stamps.Append( cn->GetStamp() );
         }
-        m_Stamp = xxHash::Calc64( &stamps[ 0 ], ( stamps.GetSize() * sizeof( uint64_t ) ) );
+        m_Stamp = xxHash3::Calc64( &stamps[ 0 ], ( stamps.GetSize() * sizeof( uint64_t ) ) );
     }
 
     return NODE_RESULT_OK;

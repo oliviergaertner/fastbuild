@@ -104,7 +104,7 @@ FunctionCopy::FunctionCopy()
             else
             {
                 // source file not defined by use - assume an external file
-                srcNodes.Append( nodeGraph.CreateFileNode( *it ) );
+                srcNodes.Append( nodeGraph.CreateNode<FileNode>( *it, funcStartIter ) );
             }
         }
     }
@@ -121,7 +121,7 @@ FunctionCopy::FunctionCopy()
     }
 
     // make all the nodes for copies
-    Dependencies copyNodes( srcNodes.GetSize(), false );
+    Dependencies copyNodes( srcNodes.GetSize() );
     for ( const Node * srcNode : srcNodes )
     {
         AStackString<> dst( dstFile );
@@ -148,14 +148,15 @@ FunctionCopy::FunctionCopy()
         }
 
         // check node doesn't already exist
-        if ( nodeGraph.FindNode( dst ) )
+        if ( const Node * existingNode = nodeGraph.FindNode( dst ) )
         {
-            Error::Error_1100_AlreadyDefined( funcStartIter, this, dst );
+            const BFFToken * existingToken = nodeGraph.FindNodeSourceToken( existingNode );
+            Error::Error_1100_AlreadyDefined( funcStartIter, this, dst, existingToken );
             return false;
         }
 
         // create our node
-        CopyFileNode * copyFileNode = nodeGraph.CreateCopyFileNode( dst );
+        CopyFileNode * copyFileNode = nodeGraph.CreateNode<CopyFileNode>( dst, funcStartIter );
         copyFileNode->m_Source = srcNode->GetName();
         copyFileNode->m_PreBuildDependencyNames = preBuildDependencyNames;
         if ( !copyFileNode->Initialize( nodeGraph, funcStartIter, this ) )
@@ -163,11 +164,11 @@ FunctionCopy::FunctionCopy()
             return false; // Initialize will have emitted an error
         }
 
-        copyNodes.EmplaceBack( copyFileNode );
+        copyNodes.Add( copyFileNode );
     }
 
     // handle alias creation
-    return ProcessAlias( nodeGraph, funcStartIter, copyNodes );
+    return ProcessAlias( nodeGraph, copyNodes );
 }
 
 // GetSourceNodes
@@ -178,11 +179,9 @@ bool FunctionCopy::GetSourceNodes( const BFFToken * iter, Node * node, Array< No
     {
         // resolve aliases to real nodes
         const AliasNode * aliasNode = node->CastTo< AliasNode >();
-        const Dependencies & aliasedNodes = aliasNode->GetAliasedNodes();
-        const Dependency * const end = aliasedNodes.End();
-        for ( const Dependency * it = aliasedNodes.Begin(); it != end; ++it )
+        for ( const Dependency & dep : aliasNode->GetAliasedNodes() )
         {
-            if ( !GetSourceNodes( iter, it->GetNode(), nodes ) )
+            if ( !GetSourceNodes( iter, dep.GetNode(), nodes ) )
             {
                 return false;
             }

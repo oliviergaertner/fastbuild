@@ -34,7 +34,7 @@ REFLECT_NODE_BEGIN( LibraryNode, ObjectListNode, MetaName( "LibrarianOutput" ) +
     REFLECT( m_LibrarianOutput,                 "LibrarianOutput",              MetaFile() )
     REFLECT_ARRAY( m_LibrarianAdditionalInputs, "LibrarianAdditionalInputs",    MetaOptional() + MetaFile() + MetaAllowNonFile( Node::OBJECT_LIST_NODE ) )
     REFLECT( m_LibrarianAllowResponseFile,      "LibrarianAllowResponseFile",   MetaOptional() )
-    REFLECT( m_LibrarianForceResponseFile,      "LibrarianForceResponseFile",   MetaOptional() )   
+    REFLECT( m_LibrarianForceResponseFile,      "LibrarianForceResponseFile",   MetaOptional() )
 
     REFLECT( m_NumLibrarianAdditionalInputs,    "NumLibrarianAdditionalInputs", MetaHidden() )
     REFLECT( m_LibrarianFlags,                  "LibrarianFlags",               MetaHidden() )
@@ -64,7 +64,7 @@ LibraryNode::LibraryNode()
         return false; // GetFileNode will have emitted an error
     }
     ASSERT( librarian.GetSize() == 1 ); // Should only be possible to be one
-    m_StaticDependencies.Append( librarian );
+    m_StaticDependencies.Add( librarian );
     m_ObjectListInputStartIndex += 1; // Ensure librarian is not treated as an input
 
     // .LibrarianOptions
@@ -97,7 +97,7 @@ LibraryNode::LibraryNode()
 
     // Store dependencies
     m_StaticDependencies.SetCapacity( m_StaticDependencies.GetSize() + librarianAdditionalInputs.GetSize() );
-    m_StaticDependencies.Append( librarianAdditionalInputs );
+    m_StaticDependencies.Add( librarianAdditionalInputs );
     // m_ObjectListInputEndIndex // NOTE: Deliberately not added to m_ObjectListInputEndIndex, since we don't want to try and compile these things
 
     m_LibrarianFlags = DetermineFlags( m_LibrarianType, m_Librarian, m_LibrarianOptions );
@@ -121,9 +121,9 @@ LibraryNode::~LibraryNode()
 
 // GatherDynamicDependencies
 //------------------------------------------------------------------------------
-/*virtual*/ bool LibraryNode::GatherDynamicDependencies( NodeGraph & nodeGraph, bool forceClean )
+/*virtual*/ bool LibraryNode::GatherDynamicDependencies( NodeGraph & nodeGraph )
 {
-    if ( ObjectListNode::GatherDynamicDependencies( nodeGraph, forceClean ) == false )
+    if ( ObjectListNode::GatherDynamicDependencies( nodeGraph ) == false )
     {
         return false; // GatherDynamicDependencies will have emited an error
     }
@@ -135,7 +135,7 @@ LibraryNode::~LibraryNode()
     const size_t endIndex = m_StaticDependencies.GetSize();
     for ( size_t i=startIndex; i<endIndex; ++i )
     {
-        m_DynamicDependencies.EmplaceBack( m_StaticDependencies[ i ].GetNode() );
+        m_DynamicDependencies.Add( m_StaticDependencies[ i ].GetNode() );
     }
     return true;
 }

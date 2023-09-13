@@ -210,6 +210,7 @@ Function::~Function() = default;
                 {
                     return false; // substitution will have emitted an error
                 }
+                m_AliasForFunctionSourceToken = headerArgsIter;
                 ++headerArgsIter;
             }
             else if ( headerArgsIter->IsVariable() )
@@ -247,6 +248,7 @@ Function::~Function() = default;
 
                 // Store alias name for use in Commit
                 m_AliasForFunction = varSrc->GetString();
+                m_AliasForFunctionSourceToken = headerArgsIter;
                 ++headerArgsIter;
             }
 
@@ -315,29 +317,32 @@ Function::~Function() = default;
     //  - For nodes that specify a name as a property (usually the output of the node)
     //    use that as the name (i.e. the filename is the name)
     //  - Otherwise, what would normally be the alias
-    AStackString<> nameFromMetaData;
+    AString nameFromMetaData;
     if ( GetNameForNode( nodeGraph, funcStartIter, node->GetReflectionInfoV(), nameFromMetaData ) == false )
     {
         FDELETE node;
         return false; // GetNameForNode will have emitted an error
     }
     const bool aliasUsedForName = nameFromMetaData.IsEmpty();
-    const AString & name = ( aliasUsedForName ) ? m_AliasForFunction : nameFromMetaData;
+    AString & name = ( aliasUsedForName ) ? m_AliasForFunction : nameFromMetaData;
     ASSERT( name.IsEmpty() == false );
+    const BFFToken * nameSourceToken = aliasUsedForName ? m_AliasForFunctionSourceToken
+                                                        : funcStartIter; // TODO:C This could probably be improved
 
     // Check name isn't already used
-    if ( nodeGraph.FindNode( name ) )
+    if ( const Node * existingNode = nodeGraph.FindNode( name ) )
     {
-        Error::Error_1100_AlreadyDefined( funcStartIter, this, name );
+        const BFFToken * existingToken = nodeGraph.FindNodeSourceToken( existingNode );
+        Error::Error_1100_AlreadyDefined( nameSourceToken, this, name, existingToken );
         FDELETE node;
         return false;
     }
 
     // Set Name
-    node->SetName( name );
+    node->SetName( Move( name ) );
 
     // Register with NodeGraph
-    nodeGraph.RegisterNode( node );
+    nodeGraph.RegisterNode( node, nameSourceToken );
 
     // Set properties
     if ( !PopulateProperties( nodeGraph, funcStartIter, node ) )
@@ -358,7 +363,7 @@ Function::~Function() = default;
     }
 
     // handle alias creation
-    return ProcessAlias( nodeGraph, funcStartIter, node );
+    return ProcessAlias( nodeGraph, node );
 }
 
 // GetString
@@ -562,8 +567,8 @@ bool Function::GetNodeList( NodeGraph & nodeGraph,
         Node * node = nodeGraph.FindNode( name );
         if ( node == nullptr )
         {
-            node = nodeGraph.CreateDirectoryListNode( name );
-            DirectoryListNode * dln = node->CastTo< DirectoryListNode >();
+            DirectoryListNode * dln = nodeGraph.CreateNode<DirectoryListNode>( name, iter );
+            node = dln;
             dln->m_Path = path;
             if ( patterns )
             {
@@ -585,7 +590,7 @@ bool Function::GetNodeList( NodeGraph & nodeGraph,
             return false;
         }
 
-        nodes.EmplaceBack( node );
+        nodes.Add( node );
     }
     return true;
 }
@@ -645,7 +650,7 @@ bool Function::GetNodeList( NodeGraph & nodeGraph,
         }
 
         // Implicitly create the new node
-        compilerNode = nodeGraph.CreateCompilerNode( nodeName );
+        compilerNode = nodeGraph.CreateNode<CompilerNode>( nodeName, iter );
         VERIFY( compilerNode->GetReflectionInfoV()->SetProperty( compilerNode, "Executable", compiler ) );
         VERIFY( compilerNode->GetReflectionInfoV()->SetProperty( compilerNode, "AllowDistribution", false ) );
         const char * lastSlash = compiler.FindLast( NATIVE_SLASH );
@@ -676,7 +681,7 @@ bool Function::GetNodeList( NodeGraph & nodeGraph,
     Node * node = nodeGraph.FindNode( file );
     if ( node == nullptr )
     {
-        node = nodeGraph.CreateFileNode( file );
+        node = nodeGraph.CreateNode<FileNode>( file, iter );
     }
     else if ( node->IsAFile() == false )
     {
@@ -684,7 +689,7 @@ bool Function::GetNodeList( NodeGraph & nodeGraph,
         return false;
     }
 
-    nodes.EmplaceBack( node );
+    nodes.Add( node );
     return true;
 }
 
@@ -736,7 +741,7 @@ bool Function::GetNodeList( NodeGraph & nodeGraph,
             return false;
         }
 
-        nodes.EmplaceBack( node );
+        nodes.Add( node );
     }
     return true;
 }
@@ -786,8 +791,8 @@ bool Function::GetNodeList( NodeGraph & nodeGraph,
     if ( n == nullptr )
     {
         // not found - create a new file node
-        n = nodeGraph.CreateFileNode( nodeName );
-        nodes.EmplaceBack( n );
+        n = nodeGraph.CreateNode<FileNode>( nodeName, iter );
+        nodes.Add( n );
         return true;
     }
 
@@ -795,7 +800,7 @@ bool Function::GetNodeList( NodeGraph & nodeGraph,
     if ( n->IsAFile() )
     {
         // found file - just use as is
-        nodes.EmplaceBack( n );
+        nodes.Add( n );
         return true;
     }
 
@@ -803,7 +808,7 @@ bool Function::GetNodeList( NodeGraph & nodeGraph,
     if ( n->GetType() == Node::OBJECT_LIST_NODE )
     {
         // use as-is
-        nodes.EmplaceBack( n );
+        nodes.Add( n );
         return true;
     }
 
@@ -814,7 +819,7 @@ bool Function::GetNodeList( NodeGraph & nodeGraph,
         if ( n->GetType() == Node::COPY_DIR_NODE )
         {
             // use as-is
-            nodes.EmplaceBack( n );
+            nodes.Add( n );
             return true;
         }
     }
@@ -824,7 +829,7 @@ bool Function::GetNodeList( NodeGraph & nodeGraph,
         if ( n->GetType() == Node::REMOVE_DIR_NODE )
         {
             // use as-is
-            nodes.EmplaceBack( n );
+            nodes.Add( n );
             return true;
         }
     }
@@ -834,7 +839,7 @@ bool Function::GetNodeList( NodeGraph & nodeGraph,
         if ( n->GetType() == Node::UNITY_NODE )
         {
             // use as-is
-            nodes.EmplaceBack( n );
+            nodes.Add( n );
             return true;
         }
     }
@@ -844,7 +849,7 @@ bool Function::GetNodeList( NodeGraph & nodeGraph,
         if ( n->GetType() == Node::COMPILER_NODE )
         {
             // use as-is
-            nodes.EmplaceBack( n );
+            nodes.Add( n );
             return true;
         }
     }
@@ -905,16 +910,16 @@ bool Function::GetStrings( const BFFToken * iter, Array< AString > & strings, co
 
 // ProcessAlias
 //------------------------------------------------------------------------------
-bool Function::ProcessAlias( NodeGraph & nodeGraph, const BFFToken * iter, Node * nodeToAlias ) const
+bool Function::ProcessAlias( NodeGraph & nodeGraph, Node * nodeToAlias ) const
 {
-    Dependencies nodesToAlias( 1, false );
-    nodesToAlias.EmplaceBack( nodeToAlias );
-    return ProcessAlias( nodeGraph, iter, nodesToAlias );
+    Dependencies nodesToAlias( 1 );
+    nodesToAlias.Add( nodeToAlias );
+    return ProcessAlias( nodeGraph, nodesToAlias );
 }
 
 // ProcessAlias
 //------------------------------------------------------------------------------
-bool Function::ProcessAlias( NodeGraph & nodeGraph, const BFFToken * iter, Dependencies & nodesToAlias ) const
+bool Function::ProcessAlias( NodeGraph & nodeGraph, Dependencies & nodesToAlias ) const
 {
     if ( m_AliasForFunction.IsEmpty() )
     {
@@ -922,18 +927,20 @@ bool Function::ProcessAlias( NodeGraph & nodeGraph, const BFFToken * iter, Depen
     }
 
     // check for duplicates
-    if ( nodeGraph.FindNode( m_AliasForFunction ) )
+    if ( const Node * existingNode = nodeGraph.FindNode( m_AliasForFunction ) )
     {
-        Error::Error_1100_AlreadyDefined( iter, this, m_AliasForFunction );
+        const BFFToken * existingToken = nodeGraph.FindNodeSourceToken( existingNode );
+        Error::Error_1100_AlreadyDefined( m_AliasForFunctionSourceToken, this, m_AliasForFunction, existingToken );
         return false;
     }
 
     // create an alias against the node
-    AliasNode * an = nodeGraph.CreateAliasNode( m_AliasForFunction );
+    AliasNode * an = nodeGraph.CreateNode<AliasNode>( m_AliasForFunction, m_AliasForFunctionSourceToken );
     an->m_StaticDependencies = nodesToAlias; // TODO: make this use m_Targets & Initialize()
 
-    // clear the string so it can't be used again
+    // Clear the alias info so it can't be used again
     m_AliasForFunction.Clear();
+    m_AliasForFunctionSourceToken = nullptr;
 
     return true;
 }
@@ -982,9 +989,10 @@ bool Function::GetNameForNode( NodeGraph & nodeGraph, const BFFToken * iter, con
         }
 
         // Check that name isn't already used
-        if ( nodeGraph.FindNode( strings[0] ) )
+        if ( const Node * existingNode = nodeGraph.FindNode( strings[0] ) )
         {
-            Error::Error_1100_AlreadyDefined( iter, this, strings[0] );
+            const BFFToken * existingToken = nodeGraph.FindNodeSourceToken( existingNode );
+            Error::Error_1100_AlreadyDefined( iter, this, strings[0], existingToken );
             return false;
         }
 

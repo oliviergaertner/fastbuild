@@ -90,7 +90,7 @@ public:
     bool        m_ShowTotalTimeTaken                = true;
     bool        m_ShowPrintStatements               = true;
     bool        m_NoSummaryOnError                  = false;
-    bool        m_GenerateReport                    = false;
+    AString     m_ReportType;
     bool        m_EnableMonitor                     = false;
     bool        m_Profile                           = false;
 
@@ -99,6 +99,7 @@ public:
     bool        m_FixupErrorPaths                   = false;
     bool        m_ForceDBMigration_Debug            = false; // Force migration even if bff has not changed (for tests)
     bool        m_ContinueAfterDBMove               = false;
+    AString     m_DBFile;
 
     uint32_t    m_NumWorkerThreads                  = 0; // True default detected in constructor
     AString     m_ConfigFile;

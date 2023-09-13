@@ -167,7 +167,7 @@ FBuildOptions::OptionsResult FBuildOptions::ProcessCommandLine( int argc, char *
                 }
                 m_CacheCompressionLevel = static_cast< int16_t >( cacheCompressionLevel );
                 i++; // skip extra arg we've consumed
-                
+
                 // add to args we might pass to subprocess
                 m_Args += ' ';
                 m_Args += argv[ sizeIndex ];
@@ -219,6 +219,25 @@ FBuildOptions::OptionsResult FBuildOptions::ProcessCommandLine( int argc, char *
                 m_Args += ' ';
                 m_Args += '"'; // surround config file with quotes to avoid problems with spaces in the path
                 m_Args += m_ConfigFile;
+                m_Args += '"';
+                continue;
+            }
+            else if ( thisArg == "-dbfile" )
+            {
+                const int32_t pathIndex = ( i + 1 );
+                if ( pathIndex >= argc )
+                {
+                    OUTPUT( "FBuild: Error: Missing <path> for '-dbfile' argument\n" );
+                    OUTPUT( "Try \"%s -help\"\n", programName.Get() );
+                    return OPTIONS_ERROR;
+                }
+                m_DBFile = argv[ pathIndex ];
+                i++; // skip extra arg we've consumed
+
+                // add to args we might pass to subprocess
+                m_Args += ' ';
+                m_Args += '"'; // surround db file with quotes to avoid problems with spaces in the path
+                m_Args += m_DBFile;
                 m_Args += '"';
                 continue;
             }
@@ -350,9 +369,27 @@ FBuildOptions::OptionsResult FBuildOptions::ProcessCommandLine( int argc, char *
                 m_ShowVerbose = false;
                 continue;
             }
-            else if ( thisArg == "-report" )
+            else if ( thisArg.BeginsWith( "-report" ) )
             {
-                m_GenerateReport = true;
+                StackArray<AString> reportTokens;
+                thisArg.Tokenize( reportTokens, '=' );
+
+                // if there is something after the '=' sign, then we take whatever comes after as the report type
+                if ( reportTokens.GetSize() > 1 )
+                {
+                    m_ReportType = reportTokens[ 1 ];
+                    m_ReportType.ToLower();
+                    if ( ( m_ReportType != "html" ) && ( m_ReportType != "json" ) )
+                    {
+                        OUTPUT( "FBuild: Error: Invalid report type '%s' for '-report'\n", m_ReportType.Get() );
+                        OUTPUT( "Try \"%s -help\"\n", programName.Get() );
+                        return OPTIONS_ERROR;
+                    }
+                }
+                else
+                {
+                    m_ReportType = "html"; // default report type if nothing specified
+                }
                 continue;
             }
             else if ( thisArg == "-showcmds" )
@@ -513,14 +550,16 @@ void FBuildOptions::SetWorkingDir( const AString & path )
     }
 
     #if defined( __WINDOWS__ )
-        // so C:\ and c:\ are treated the same on Windows, for better cache hits
-        // make the drive letter always uppercase
-        if ( ( m_WorkingDir.GetLength() >= 2 ) &&
-             ( m_WorkingDir[ 1 ] == ':' ) &&
-             ( m_WorkingDir[ 0 ] >= 'a' ) &&
-             ( m_WorkingDir[ 0 ] <= 'z' ) )
+        // Canonicalize the working dir so that drive letters
+        // and directory names have correct/consistent paths.
+        // This ensures things that are sensitive to path casing
+        // work as expected:
+        // a) Compilers with path portability warnings (Clang)
+        // b) Caching
+        AStackString<> normalizedWorkingDir;
+        if ( FileIO::NormalizeWindowsPathCasing( m_WorkingDir, normalizedWorkingDir ) )
         {
-            m_WorkingDir[ 0 ] = ( 'A' + ( m_WorkingDir[ 0 ] - 'a' ) );
+            m_WorkingDir = normalizedWorkingDir;
         }
     #endif
 
@@ -604,6 +643,7 @@ void FBuildOptions::DisplayHelp( const AString & programName ) const
             " -config <path>    Explicitly specify the config file to use.\n"
             " -continueafterdbmove\n"
             "       Allow builds after a DB move.\n"
+            " -dbfile <path>    Explicitly specify the dependency database file to use.\n"
             " -debug            (Windows) Break at startup, to attach debugger.\n"
             " -dist             Allow distributed compilation.\n"
             " -distverbose      Print detailed info for distributed compilation.\n"
@@ -632,7 +672,10 @@ void FBuildOptions::DisplayHelp( const AString & programName ) const
             " -profile          Output an fbuild_profiling.json describing the build.\n"
             " -progress         Show build progress bar even if stdout is redirected.\n"
             " -quiet            Don't show build output.\n"
-            " -report           Ouput report.html at build end. (Increases build time)\n"
+            " -report[=json|html]\n"
+            "                   Ouput report at build end. (Increases build time)\n"
+            "                   - =html : outputs a report.html file (default)\n"
+            "                   - =json : outputs a report.json file\n"
             " -showcmds         Show command lines used to launch external processes.\n"
             " -showcmdoutput    Show output of external processes.\n"
             " -showdeps         Show known dependency tree for specified targets.\n"
@@ -662,7 +705,7 @@ void FBuildOptions::DisplayVersion() const
         #define VERSION_CONFIG ""
     #endif
     OUTPUT( "FASTBuild " FBUILD_VERSION_STRING " " VERSION_CONFIG "- "
-            "Copyright 2012-2022 Franta Fulin - https://www.fastbuild.org\n" );
+            "Copyright 2012-2023 Franta Fulin - https://www.fastbuild.org\n" );
     #undef VERSION_CONFIG
 }
 

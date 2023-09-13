@@ -26,6 +26,146 @@
 
 <h1>Changelog</h1>
 
+<div class='newsitemheader'>
+    v1.11&nbsp;<font color='#bbbbbb'>(19th-Aug-2023)</font>
+</div>
+<div class='newsitembody'>
+    <b>Notes</b>
+    <ul>
+        <li>DB Version Changed : clean build will occur</li>
+    </ul>
+    <b>Fixes</b>
+    <ul>
+        <li>[Linux] Robustify file copy if sendfile isn't supported  (Thanks to Nick Krecklow)</li>
+    </ul>
+    <b>Improvements</b>
+    <ul>
+        <li>Reduce cost of queueing jobs during graph traversal</li>
+        <li>Improve LightCache performance considerably for many CPU core systems</li>
+        <li>Directory listings with excluded folders optimized significantly</li>
+        <li>All directory listings optimized slightly</li>
+        <li>Database loading and various lookup performance improved slightly</li>
+        <li>Improve database load time slightly</li>
+        <li>Error #1100 emits location of previous declaration</li>
+        <li><a href="options.html#dbfile">-dbfile</a> arg can explicitly set dependency db file location (Thanks to Troels Gram)</li>
+        <li>[Linux] Improve detection of max args length using _SC_ARG_MAX (Thanks to Domain)</li>
+        <li>VXCProject exposes AndroidApkLocation for Android Game Development Extension</li>
+    </ul>
+</div>
+
+<div class='newsitemheader'>
+    v1.10&nbsp;<font color='#bbbbbb'>(28th-May-2023)</font>
+</div>
+<div class='newsitembody'>
+    <b>Notes</b>
+    <ul>
+        <li>DB Version Changed : clean build will occur</li>
+        <li>Cache version changed : cache will be re-populated</li>
+    </ul>
+    <b>New</b>
+    <ul>
+        <li>[OSX] Apple Silicon is supported natively using Universal binaries</li>
+    </ul>
+    <b>Fixes</b>
+    <ul>
+        <li>Distributed Compilation</li>
+        <ul>
+            <li>Prevent Worker over-requesting jobs when there are multiple Clients</li>
+        </ul>
+        <li>[Linux][OSX] Fix file/folder permissions being exessively permissive (Thanks to Pete Lewis)</li>
+        <li>Chained ObjectLists correctly handle duplicate names in sub-directories (Thanks to Dandielo)</li>
+        <li>Fix crash when .CompilerOutputPath is missing but required on ObjectList/Library</li>
+    </ul>
+    <b>Improvements</b>
+    <ul>
+        <li>Distributed Compilation</li>
+        <ul>
+            <li>Toolchain management performance improved slightly when toolchain changes</li>
+            <li>Remove some unecessary lock contention in FBuildWorker</li>
+            <li>FBuildWorker can be set to restart every 4 hours (<a href="options.html#periodicrestart">-periodicrestart</a>)</li>
+            <li>Eliminate various instances of lock contention in FBuildWorker</li>
+        </ul>
+        <li>Cache performance improved slightly for check, store and retrieve operations</li>
+        <li>Performance of various build steps improved slightly</li>
+        <li>Database validation improved, reducing startup/shutdown time slightly</li>
+        <li>Fix documenation errors for some optional fields (Thanks to Harrison Ting)</li>
+    </ul>
+</div>
+
+<div class='newsitemheader'>
+    v1.09&nbsp;<font color='#bbbbbb'>(5th-Mar-2023)</font>
+</div>
+<div class='newsitembody'>
+    <b>Notes</b>
+    <ul>
+        <li>DB Version Changed : clean build will occur</li>
+    </ul>
+    <b>Fixes</b>
+    <ul>
+        <li>Distributed Compilation</li>
+        <ul>
+            <li>Distributed compilation will no longer distribute to itself (the host machine)</li>
+        </ul>
+        <li>[Windows] Working dir canonicalization works in directories with special display names</li>
+        <li>Response files arg is correctly quoted for Clang compatibility (Thanks to Sebastien Alaiwan)</li>
+        <li>Directories ending in /.. or /. (no trailing slash) are handled correctly in various places (Thanks to dummyunit)</li>
+        <li>Re-instate optimization to avoid some processing when MSVC warnings as errors (/WX) is used</li>
+        <li>Concatenating empty arrays within structs is properly handled (Thanks to Curtis Maves)</li>
+        <li>Concatenating non-empty ArrayOfStructs no longer incorrectly changes type to Struct (Thanks to Curtis Maves)</li>
+        <li>Add missing .CompilerInputAllowNoFiles for Library() in basic documentation</li>
+        <li>-Werror for clang/gcc was not properly detected inhibiting a minor optimization (Thanks to poljak181)</li>
+    </ul>
+    <b>Improvements</b>
+    <ul>
+        <li>Distributed Compilation</li>
+        <ul>
+            <li>[Windows] STATUS_CONTROL_C_EXIT (0xC000013A) is considered a retryable System Failure (Thanks to Sam Hocevar)</li>
+        </ul>
+        <li>Add FASTBUILD_EXE_PATH built-in variable (Thanks to Lambert Clara)</li>
+        <li>Add .Environment option to Exec() (Thanks to ZeroErrors)</li>
+        <li>Improved compression perf in some scenarios (LZ4 1.9.4)</li>
+        <li>Expose recursion control for in VCXProject & XCodeProject via .CompilerInputPathsRecurse (Thanks to Troels Gram)</li>
+        <li><a href="options.html#report">-report</a> can output in json format as well as html (Thanks to EwanMoshi)</li>
+    </ul>
+</div>
+
+<div class='newsitemheader'>
+    v1.08&nbsp;<font color='#bbbbbb'>(5th-Nov-2022)</font>
+</div>
+<div class='newsitembody'>
+    <b>Notes</b>
+    <ul>
+        <li>DB Version Changed : clean build will occur</li>
+    </ul>
+    <b>Fixes</b>
+    <ul>
+        <li>Distributed Compilation</li>
+        <ul>
+            <li>Harden FBuildWorker against corrupt data from old clients</li>
+            <li>Prevent toolchain synchronization getting stuck if a worker disconnects before synchronizing the manifest</ul>
+        </ul>
+    </ul>
+    <b>Improvements</b>
+    <ul>
+        <li>Distributed Compilation</li>
+        <ul>
+            <li>Clang/GCC gcov disables distributed compilation (results are not usable if built remotely)</li>
+            <li>[Windows] Consider remote error 0x4 (ERROR_TOO_MANY_OPEN_FILES) a system failure</li>
+            <li>Modify remote errors that are retried in <a href="options.html#distverbose">-distverbose</a> output to stop MSBuild considering them as failures</li>
+        </ul>
+        <li>Caching</li>
+        <ul>
+            <li>Clang/GCC gcov files (.gcno) are cached when used</li>
+            <li>[Windows] Working dir casing normalized to remove variances in cache key generation</li>
+        </ul>
+        <li>Improve dependency graph traversal performance</li>
+        <li>Optimize dependency graph traversal by eliminating redundant checks</li>
+        <li>Improve database corruption detection to handle things like power loss</li>
+        <li>Improve node graph traversal by avoiding unnecessary cyclic dependency checks</li>
+        <li>RemoveDir can use .RemoveExcludeFiles to exclude specific files (Thanks to Domain)</li>
+        <li>[Windows] Working dir casing normalized avoiding portability issues with Clang</li>
+    </ul>
+</div>
 
 <div class='newsitemheader'>
     v1.07&nbsp;<font color='#bbbbbb'>(31st-July-2022)</font>
@@ -2277,6 +2417,6 @@ Fixes
     </div>
 
 
-    </div><div class='footer'>&copy; 2012-2022 Franta Fulin</div></div></div>
+    </div><div class='footer'>&copy; 2012-2023 Franta Fulin</div></div></div>
 </body>
 </html>

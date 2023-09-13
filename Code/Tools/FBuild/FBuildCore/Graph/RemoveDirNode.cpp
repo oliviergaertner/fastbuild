@@ -21,15 +21,17 @@ REFLECT_NODE_BEGIN( RemoveDirNode, Node, MetaNone() )
     REFLECT_ARRAY( m_RemovePatterns,            "RemovePatterns",       MetaOptional() )
     REFLECT(       m_RemovePathsRecurse,        "RemovePathsRecurse",   MetaOptional() )
     REFLECT_ARRAY( m_RemoveExcludePaths,        "RemoveExcludePaths",   MetaOptional() + MetaPath() )
+    REFLECT_ARRAY( m_RemoveExcludeFiles,        "RemoveExcludeFiles",   MetaOptional() + MetaFile() )
     REFLECT_ARRAY( m_PreBuildDependencyNames,   "PreBuildDependencies", MetaOptional() + MetaFile() + MetaAllowNonFile() )
 REFLECT_END( RemoveDirNode )
 
 // CONSTRUCTOR
 //------------------------------------------------------------------------------
 RemoveDirNode::RemoveDirNode()
-    : Node( AString::GetEmpty(), Node::REMOVE_DIR_NODE, Node::FLAG_ALWAYS_BUILD )
+    : Node( Node::REMOVE_DIR_NODE )
     , m_RemovePathsRecurse( true )
 {
+    m_ControlFlags = Node::FLAG_ALWAYS_BUILD;
     m_RemovePatterns.EmplaceBack( "*" );
 }
 
@@ -50,7 +52,7 @@ RemoveDirNode::RemoveDirNode()
                                               function,
                                               m_RemovePaths,
                                               m_RemoveExcludePaths,
-                                              Array< AString >(), // unused FilesToExclude
+                                              m_RemoveExcludeFiles, // unused FilesToExclude
                                               Array< AString >(), // unused ExcludePatterns
                                               m_RemovePathsRecurse,
                                               false, // Don't include read-only status in hash
@@ -62,7 +64,7 @@ RemoveDirNode::RemoveDirNode()
     }
 
     // Store dependencies
-    m_StaticDependencies.Append( fileListDeps );
+    m_StaticDependencies.Add( fileListDeps );
 
     return true;
 }

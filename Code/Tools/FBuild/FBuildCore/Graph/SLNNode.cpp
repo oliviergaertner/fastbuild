@@ -76,8 +76,9 @@ struct VCXProjectNodeComp
 // CONSTRUCTOR
 //------------------------------------------------------------------------------
 SLNNode::SLNNode()
-    : FileNode( AString::GetEmpty(), Node::FLAG_ALWAYS_BUILD )
+    : FileNode()
 {
+    m_ControlFlags = Node::FLAG_ALWAYS_BUILD;
     m_LastBuildTimeMs = 100; // higher default than a file node
     m_Type = Node::SLN_NODE;
 }
@@ -163,7 +164,7 @@ SLNNode::SLNNode()
         {
             // Merge list of projects
             found->m_Projects.Append( folder.m_Projects );
-            
+
             // Merge list of items
             found->m_Items.Append( folder.m_Items );
         }
@@ -257,7 +258,7 @@ SLNNode::SLNNode()
     m_StaticDependencies.SetCapacity( projects.GetSize() );
     for ( VSProjectBaseNode * project : projects )
     {
-        m_StaticDependencies.EmplaceBack( project );
+        m_StaticDependencies.Add( project );
     }
 
     return true;
@@ -299,7 +300,7 @@ SLNNode::~SLNNode() = default;
     }
 
     // Record stamp representing the contents of the files
-    m_Stamp = xxHash::Calc64( sln );
+    m_Stamp = xxHash3::Calc64( sln );
 
     return NODE_RESULT_OK;
 }

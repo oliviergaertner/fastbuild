@@ -277,7 +277,7 @@ loop:
 
 // Scan
 //------------------------------------------------------------------------------
-int32_t AString::Scan( MSVC_SAL_SCANF const char * fmtString, ... )
+int32_t AString::Scan( MSVC_SAL_SCANF const char * fmtString, ... ) const
 {
     va_list args;
     va_start( args, fmtString );
@@ -471,6 +471,31 @@ void AString::Clear()
     // truncate, but don't free the memory
     m_Contents[ 0 ] = '\000';
     m_Length = 0;
+}
+
+// ClearAndFreeMemory
+//------------------------------------------------------------------------------
+void AString::ClearAndFreeMemory()
+{
+    if ( MemoryMustBeFreed() )
+    {
+        // Free memory that was allocated
+        FREE( m_Contents );
+
+        // Reset to new empty string state
+        m_Contents = const_cast<char*>( s_EmptyString );
+        m_Length = 0;
+        m_ReservedAndFlags = 0;
+    }
+    else
+    {
+        // Pointing to unfreeable memory so just reset state
+        if ( m_Contents != const_cast<char*>( s_EmptyString ) )
+        {
+            m_Contents[ 0 ] = '\000';
+        }
+        m_Length = 0;
+    }
 }
 
 // SetReserved
@@ -684,7 +709,7 @@ void AString::TrimStart( char charToTrimFromStart )
     uint32_t nbrCharsToRemoveFromStart = 0;
     const char * pos = m_Contents;
     const char * end = m_Contents + m_Length;
-    for ( ; pos < end && *pos == charToTrimFromStart; ++pos, ++nbrCharsToRemoveFromStart ) 
+    for ( ; pos < end && *pos == charToTrimFromStart; ++pos, ++nbrCharsToRemoveFromStart )
     {
     }
 
@@ -698,7 +723,7 @@ void AString::TrimEnd( char charToTrimFromEnd )
     uint32_t nbrCharsToRemoveFromEnd = 0;
     const char * pos = m_Contents + m_Length - 1;
     const char * end = m_Contents;
-    for ( ; pos >= end && *pos == charToTrimFromEnd; --pos, ++nbrCharsToRemoveFromEnd ) 
+    for ( ; pos >= end && *pos == charToTrimFromEnd; --pos, ++nbrCharsToRemoveFromEnd )
     {
     }
 

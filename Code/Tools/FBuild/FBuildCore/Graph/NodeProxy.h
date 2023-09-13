@@ -11,14 +11,15 @@
 class NodeProxy : public Node
 {
 public:
-    explicit NodeProxy( const AString & name );
+    explicit NodeProxy( AString && name );
     virtual bool Initialize( NodeGraph & nodeGraph, const BFFToken * funcStartIter, const Function * function ) override;
     virtual ~NodeProxy() override;
 
     virtual bool IsAFile() const override;
 
 protected:
-    virtual bool DetermineNeedToBuild( const Dependencies & deps ) const override;
+    virtual bool DetermineNeedToBuildStatic() const override;
+    virtual bool DetermineNeedToBuildDynamic() const override;
 };
 
 //------------------------------------------------------------------------------

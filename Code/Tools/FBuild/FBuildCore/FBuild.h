@@ -8,8 +8,8 @@
 #include "Tools/FBuild/FBuildCore/BFF/BFFUserFunctions.h"
 #include "Tools/FBuild/FBuildCore/FBuildOptions.h"
 #include "Tools/FBuild/FBuildCore/Graph/NodeGraph.h"
+#include "Tools/FBuild/FBuildCore/WorkerPool/WorkerBrokerageClient.h"
 #include "Helpers/FBuildStats.h"
-#include "WorkerPool/WorkerBrokerage.h"
 
 #include "Core/Containers/Array.h"
 #include "Core/Containers/Singleton.h"
@@ -23,10 +23,11 @@ class Client;
 class Dependencies;
 class FileStream;
 class ICache;
-class IOStream;
+class MemoryStream;
 class JobQueue;
 class Node;
 class NodeGraph;
+class ThreadPool;
 
 // FBuild
 //------------------------------------------------------------------------------
@@ -48,7 +49,7 @@ public:
 
     // after a build we can store progress/parsed rules for next time
     bool SaveDependencyGraph( const char * nodeGraphDBFile ) const;
-    void SaveDependencyGraph( IOStream & memorySteam, const char* nodeGraphDBFile ) const;
+    void SaveDependencyGraph( MemoryStream & memorySteam, const char* nodeGraphDBFile ) const;
 
     const FBuildOptions & GetOptions() const { return m_Options; }
 
@@ -122,6 +123,7 @@ protected:
     static volatile bool s_AbortBuild;  // -fastcancel - TODO:C merge with StopBuild
 
     NodeGraph * m_DependencyGraph;
+    ThreadPool * m_ThreadPool = nullptr;
     JobQueue * m_JobQueue;
     mutable Mutex m_ClientLifetimeMutex;
     Client * m_Client; // manage connections to worker servers
@@ -139,7 +141,7 @@ protected:
 
     FBuildOptions m_Options;
 
-    WorkerBrokerage m_WorkerBrokerage;
+    WorkerBrokerageClient m_WorkerBrokerage;
 
     AString m_OldWorkingDir;
 

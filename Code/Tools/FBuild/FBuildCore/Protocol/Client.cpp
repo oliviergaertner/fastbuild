@@ -46,11 +46,7 @@ Client::Client( const Array< AString > & workerList,
     // allocate space for server states
     m_ServerList.SetSize( workerList.GetSize() );
 
-    m_Thread = Thread::CreateThread( ThreadFuncStatic,
-                                     "Client",
-                                     ( 64 * KILOBYTE ),
-                                     this );
-    ASSERT( m_Thread );
+    m_Thread.Start( ThreadFuncStatic, "Client", this );
 }
 
 // DESTRUCTOR
@@ -62,11 +58,9 @@ Client::~Client()
     SetShuttingDown();
 
     m_ShouldExit.Store( true );
-    Thread::WaitForThread( m_Thread );
+    m_Thread.Join();
 
     ShutdownAllConnections();
-
-    Thread::CloseHandle( m_Thread );
 }
 
 //------------------------------------------------------------------------------
@@ -485,14 +479,14 @@ void Client::Process( const ConnectionInfo * connection, const Protocol::MsgRequ
         // If we will write the results to the cache, and this node is cacheable
         // then we want to respect higher cache compression levels if set
         const int16_t cacheCompressionLevel = FBuild::Get().GetOptions().m_CacheCompressionLevel;
-        if ( ( cacheCompressionLevel != 0 ) && 
-             ( FBuild::Get().GetOptions().m_UseCacheWrite ) && 
+        if ( ( cacheCompressionLevel != 0 ) &&
+             ( FBuild::Get().GetOptions().m_UseCacheWrite ) &&
              ( job->GetNode()->CastTo< ObjectNode >()->ShouldUseCache() ) )
         {
             resultCompressionLevel = Math::Max( resultCompressionLevel, cacheCompressionLevel );
         }
     }
-    
+
     // Take note of the results compression level so we know to expect
     // compressed results
     job->SetResultCompressionLevel( resultCompressionLevel );
@@ -554,7 +548,7 @@ void Client::ProcessJobResultCommon( const ConnectionInfo * connection, bool isC
 
     uint32_t buildTime;
     ms.Read( buildTime );
-    
+
     uint16_t remoteThreadId = 0;
     ms.Read( remoteThreadId );
 
@@ -588,7 +582,14 @@ void Client::ProcessJobResultCommon( const ConnectionInfo * connection, bool isC
         failureOutput.Format( "PROBLEM: %s\n", node->GetName().Get() );
         for ( const AString & message : messages )
         {
-            failureOutput += message;
+            // When invoked from MSBuild (directly or from Visual Studio) and
+            // using -distverbose we might output a remote error string. MSBuild
+            // uses regexs to pattern match these strings and force an error
+            // which we don't want. So we "clean" these strings to tweak the
+            // message slightly to avoid that
+            AStackString<> messageCleaned;
+            Node::CleanMessageToPreventMSBuildFailure( message, messageCleaned );
+            failureOutput += messageCleaned;
         }
     }
 
@@ -693,7 +694,7 @@ void Client::ProcessJobResultCommon( const ConnectionInfo * connection, bool isC
     if ( result == true )
     {
         // built ok - serialize to disc
-        
+
         ObjectNode * objectNode = node->CastTo< ObjectNode >();
 
         // Store to cache if needed

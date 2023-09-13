@@ -77,7 +77,7 @@ REFLECT_END( ObjectListNode )
 // ObjectListNode
 //------------------------------------------------------------------------------
 ObjectListNode::ObjectListNode()
-: Node( AString::GetEmpty(), Node::OBJECT_LIST_NODE, Node::FLAG_NONE )
+    : Node( Node::OBJECT_LIST_NODE )
 {
     m_LastBuildTimeMs = 10000;
 
@@ -233,6 +233,7 @@ ObjectListNode::ObjectListNode()
         if ( m_CompilerOutputPath.IsEmpty() )
         {
             Error::Error_1101_MissingProperty( iter, function, AStackString<>( "CompilerOutputPath" ) );
+            return false;
         }
     }
 
@@ -268,7 +269,7 @@ ObjectListNode::ObjectListNode()
             Error::Error_1102_UnexpectedType( iter, function, "CompilerInputUnity", unity, n->GetType(), Node::UNITY_NODE );
             return false;
         }
-        compilerInputUnity.EmplaceBack( n );
+        compilerInputUnity.Add( n );
     }
 
     // .CompilerInputPath
@@ -319,9 +320,9 @@ ObjectListNode::ObjectListNode()
     m_StaticDependencies.SetCapacity( compilerInputPath.GetSize() +
                                       compilerInputUnity.GetSize() +
                                       compilerInputObjectLists.GetSize() );
-    m_StaticDependencies.Append( compilerInputPath );
-    m_StaticDependencies.Append( compilerInputUnity );
-    m_StaticDependencies.Append( compilerInputObjectLists );
+    m_StaticDependencies.Add( compilerInputPath );
+    m_StaticDependencies.Add( compilerInputUnity );
+    m_StaticDependencies.Add( compilerInputObjectLists );
 
     // Take note of how many things are treated as inputs
     // (this is needed so LibraryNode can add some additional things)
@@ -343,10 +344,8 @@ ObjectListNode::~ObjectListNode() = default;
 
 // GatherDynamicDependencies
 //------------------------------------------------------------------------------
-/*virtual*/ bool ObjectListNode::GatherDynamicDependencies( NodeGraph & nodeGraph, bool forceClean )
+/*virtual*/ bool ObjectListNode::GatherDynamicDependencies( NodeGraph & nodeGraph )
 {
-    (void)forceClean; // dynamic deps are always re-added here, so this is meaningless
-
     // clear dynamic deps from previous passes
     m_DynamicDependencies.Clear();
 
@@ -370,7 +369,7 @@ ObjectListNode::~ObjectListNode() = default;
                 Node * n = nodeGraph.FindNode( fIt->m_Name );
                 if ( n == nullptr )
                 {
-                    n = nodeGraph.CreateFileNode( fIt->m_Name );
+                    n = nodeGraph.CreateNode<FileNode>( fIt->m_Name );
                 }
                 else if ( n->IsAFile() == false )
                 {
@@ -408,7 +407,7 @@ ObjectListNode::~ObjectListNode() = default;
                 Node * n = nodeGraph.FindNode( *it );
                 if ( n == nullptr )
                 {
-                    n = nodeGraph.CreateFileNode( *it );
+                    n = nodeGraph.CreateNode<FileNode>( *it );
                 }
                 else if ( n->IsAFile() == false )
                 {
@@ -429,7 +428,7 @@ ObjectListNode::~ObjectListNode() = default;
                 Node * n = nodeGraph.FindNode( isolatedFile.GetFileName() );
                 if ( n == nullptr )
                 {
-                    n = nodeGraph.CreateFileNode( isolatedFile.GetFileName() );
+                    n = nodeGraph.CreateNode<FileNode>( isolatedFile.GetFileName() );
                 }
                 else if ( n->IsAFile() == false )
                 {
@@ -467,7 +466,7 @@ ObjectListNode::~ObjectListNode() = default;
                 }
 
                 // create the object that will compile the above file
-                if ( CreateDynamicObjectNode( nodeGraph, n->GetName(), AString::GetEmpty() ) == false )
+                if ( CreateDynamicObjectNode( nodeGraph, n->GetName(), objListNode->GetCompilerOutputPath() ) == false )
                 {
                     return false; // CreateDynamicObjectNode will have emitted error
                 }
@@ -504,7 +503,7 @@ ObjectListNode::~ObjectListNode() = default;
     {
         Node * node = nodeGraph.FindNode( m_PrecompiledHeaderName );
         ASSERT( node ); // Should always exist if we get here
-        m_DynamicDependencies.EmplaceBack( node );
+        m_DynamicDependencies.Add( node );
     }
 
     return true;
@@ -512,9 +511,9 @@ ObjectListNode::~ObjectListNode() = default;
 
 // DoDynamicDependencies
 //------------------------------------------------------------------------------
-/*virtual*/ bool ObjectListNode::DoDynamicDependencies( NodeGraph & nodeGraph, bool forceClean )
+/*virtual*/ bool ObjectListNode::DoDynamicDependencies( NodeGraph & nodeGraph )
 {
-    if ( GatherDynamicDependencies( nodeGraph, forceClean ) == false )
+    if ( GatherDynamicDependencies( nodeGraph ) == false )
     {
         return false; // GatherDynamicDependencies will have emitted error
     }
@@ -574,7 +573,7 @@ ObjectListNode::~ObjectListNode() = default;
             ASSERT( on->GetStamp() );
             stamps.Append( on->GetStamp() );
         }
-        m_Stamp = xxHash::Calc64( &stamps[0], ( stamps.GetSize() * sizeof(uint64_t) ) );
+        m_Stamp = xxHash3::Calc64( &stamps[0], ( stamps.GetSize() * sizeof(uint64_t) ) );
     }
 
     return NODE_RESULT_OK;
@@ -584,11 +583,9 @@ ObjectListNode::~ObjectListNode() = default;
 //------------------------------------------------------------------------------
 void ObjectListNode::GetInputFiles( Args & fullArgs, const AString & pre, const AString & post, bool objectsInsteadOfLibs ) const
 {
-    for ( Dependencies::Iter i = m_DynamicDependencies.Begin();
-          i != m_DynamicDependencies.End();
-          i++ )
+    for ( const Dependency & dep : m_DynamicDependencies )
     {
-        const Node * n = i->GetNode();
+        const Node * n = dep.GetNode();
 
         // handle pch files - get path to object
         if ( n->GetType() == Node::OBJECT_NODE )
@@ -651,12 +648,9 @@ void ObjectListNode::GetInputFiles( Array< AString > & files ) const
     ASSERT( GetType() == Node::OBJECT_LIST_NODE );
 
     files.SetCapacity( files.GetCapacity() + m_DynamicDependencies.GetSize() );
-    for ( Dependencies::Iter i = m_DynamicDependencies.Begin();
-          i != m_DynamicDependencies.End();
-          i++ )
+    for ( const Dependency & dep : m_DynamicDependencies )
     {
-        const Node * n = i->GetNode();
-        files.Append( n->GetName() );
+        files.Append( dep.GetNode()->GetName() );
     }
 }
 
@@ -762,7 +756,7 @@ bool ObjectListNode::CreateDynamicObjectNode( NodeGraph & nodeGraph,
             return false;
         }
     }
-    m_DynamicDependencies.EmplaceBack( on );
+    m_DynamicDependencies.Add( on );
     return true;
 }
 
@@ -781,7 +775,7 @@ ObjectNode * ObjectListNode::CreateObjectNode( NodeGraph & nodeGraph,
                                                const AString & objectInput,
                                                const AString & pchObjectName )
 {
-    ObjectNode * node= nodeGraph.CreateObjectNode( objectName );
+    ObjectNode * node= nodeGraph.CreateNode<ObjectNode>( objectName, iter );
     node->m_Compiler = m_Compiler;
     node->m_CompilerOptions = compilerOptions;
     node->m_CompilerOptionsDeoptimized = compilerOptionsDeoptimized;
@@ -842,7 +836,7 @@ void ObjectListNode::EnumerateInputFiles( void (*callback)( const AString & inpu
     {
         callback( file, AString::GetEmpty(), userData );
     }
-    
+
     // Dynamically discovered files
     for ( size_t i = m_ObjectListInputStartIndex; i < m_ObjectListInputEndIndex; ++i )
     {

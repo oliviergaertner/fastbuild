@@ -48,12 +48,16 @@ public:
     ThreadStartInfo( Thread::ThreadEntryFunction entryFunc, void * userData, const char * threadName )
         : m_UserEntryFunction( entryFunc )
         , m_UserData( userData )
-        , m_ThreadName( threadName )
-    {}
+    {
+        if ( threadName )
+        {
+            m_ThreadName = threadName;
+        }
+    }
 
     Thread::ThreadEntryFunction m_UserEntryFunction;
     void *          m_UserData;
-    const char *    m_ThreadName;
+    AString         m_ThreadName;
 
     #if defined( __WINDOWS__ )
         static uint32_t WINAPI ThreadStartFunction( void * userData )
@@ -66,13 +70,16 @@ public:
         Thread::ThreadEntryFunction realFunction = originalInfo->m_UserEntryFunction;
         void * realUserData = originalInfo->m_UserData;
 
-        // Set thread name for debugging
-        #ifdef DEBUG
-            if ( originalInfo->m_ThreadName )
-            {
-                Thread::SetThreadName( originalInfo->m_ThreadName );
-            }
-        #endif
+        if ( originalInfo->m_ThreadName.IsEmpty() == false )
+        {
+            // Set thread name for debugging
+            #ifdef DEBUG
+                Thread::SetThreadName( originalInfo->m_ThreadName.Get() );
+            #endif
+
+            // Set thread name for profiling
+            PROFILE_SET_THREAD_NAME( originalInfo->m_ThreadName.Get() );
+        }
 
         // done with ThreadStartInfo
         MemoryBarrier();
@@ -85,11 +92,116 @@ public:
             return (void *)(size_t)( (*realFunction)( realUserData ) );
         #endif
     }
+
+    void operator =(const ThreadStartInfo& other) = delete;
 };
 
 // Static Data
 //------------------------------------------------------------------------------
 /*static*/ Thread::ThreadId Thread::s_MainThreadId( Thread::GetCurrentThreadId() );
+
+// CONSTRUCTOR
+//------------------------------------------------------------------------------
+Thread::Thread() = default;
+
+// DESTRUCTOR
+//------------------------------------------------------------------------------
+Thread::~Thread()
+{
+    // Thread must be joined before being destroyed
+    ASSERT( m_Handle == INVALID_THREAD_HANDLE );
+}
+
+// Start
+//------------------------------------------------------------------------------
+void Thread::Start( ThreadEntryFunction func,
+                    const char * threadName,
+                    void * userData,
+                    uint32_t stackSizeBytes )
+{
+    // Can only start if not already started
+    ASSERT( !IsRunning() );
+
+    // Create structure to pass to thread
+    ThreadStartInfo & info = *FNEW( ThreadStartInfo( func, userData, threadName ) );
+    MemoryBarrier();
+
+    // Create thread
+    #if defined( __WINDOWS__ )
+        HANDLE h = ::CreateThread( nullptr,         // LPSECURITY_ATTRIBUTES lpThreadAttributes
+                                   stackSizeBytes,  // SIZE_T dwStackSize
+                                   (LPTHREAD_START_ROUTINE)ThreadStartInfo::ThreadStartFunction,    // LPTHREAD_START_ROUTINE lpStartAddress
+                                   &info,           // LPVOID lpParameter
+                                   0,               // DWORD dwCreationFlags
+                                   nullptr          // LPDWORD lpThreadId
+                                 );
+        ASSERT( h != nullptr );
+    #elif defined( __LINUX__ ) || defined( __APPLE__ )
+        #if __has_feature( address_sanitizer ) || defined( __SANITIZE_ADDRESS__ )
+            // AddressSanitizer instruments objects created on the stack by inserting redzones around them.
+            // This greatly increases the amount of stack space used by the program.
+            // To account for that double the requested stack size for the thread.
+            stackSizeBytes *= 2;
+        #endif
+        // Necessary on Aarch64, where it's 131072 in my tests. Sometimes we ask for 65536.
+        if ( stackSizeBytes < PTHREAD_STACK_MIN )
+        {
+            stackSizeBytes = PTHREAD_STACK_MIN;
+        }
+        pthread_t h( 0 );
+        pthread_attr_t threadAttr;
+        VERIFY( pthread_attr_init( &threadAttr ) == 0 );
+        VERIFY( pthread_attr_setstacksize( &threadAttr, stackSizeBytes ) == 0 );
+        VERIFY( pthread_attr_setdetachstate( &threadAttr, PTHREAD_CREATE_JOINABLE ) == 0 );
+        VERIFY( pthread_create( &h, &threadAttr, ThreadStartInfo::ThreadStartFunction, &info ) == 0 );
+        ASSERT( h != (pthread_t)0 );
+    #else
+        #error Unknown platform
+    #endif
+    m_Handle = (Thread::ThreadHandle)h;
+
+    ASSERT( IsRunning() );
+}
+
+// Join
+//------------------------------------------------------------------------------
+uint32_t Thread::Join()
+{
+    // Must only join if running and not already joined
+    ASSERT( IsRunning() );
+
+    // Wait for thread and obtain return result
+    #if defined( __WINDOWS__ )
+        // Wait for thread to finish
+        VERIFY( WaitForSingleObject( m_Handle, INFINITE ) == WAIT_OBJECT_0 );
+
+        // Ge teturn code
+        DWORD ret = 0;
+        VERIFY( ::GetExitCodeThread( m_Handle, (LPDWORD)&ret ) );
+        VERIFY( ::CloseHandle( m_Handle ) );
+        m_Handle = INVALID_THREAD_HANDLE;
+        return ret;
+    #elif defined( __APPLE__ ) || defined( __LINUX__ )
+        void * ret;
+        if ( pthread_join( (pthread_t)m_Handle, &ret ) == 0 )
+        {
+            m_Handle = INVALID_THREAD_HANDLE;
+            return static_cast<uint32_t>( (size_t)ret );
+        }
+        ASSERT( false ); // usage failure
+        m_Handle = INVALID_THREAD_HANDLE;
+        return 0;
+    #else
+        #error Unknown platform
+    #endif
+}
+
+// IsRunning
+//------------------------------------------------------------------------------
+bool Thread::IsRunning() const
+{
+    return ( m_Handle != INVALID_THREAD_HANDLE );
+}
 
 // GetCurrentThreadId
 //------------------------------------------------------------------------------
@@ -110,7 +222,7 @@ public:
 {
     PROFILE_FUNCTION;
 
-    #if defined( WIN32 ) || defined( WIN64 )
+    #if defined( __WINDOWS__ )
         ::Sleep( ms );
     #elif defined( __APPLE__ ) || defined( __LINUX__ )
         usleep( ms * 1000 );
@@ -119,121 +231,60 @@ public:
     #endif
 }
 
-// CreateThread
+// Detach
 //------------------------------------------------------------------------------
-/*static*/ Thread::ThreadHandle Thread::CreateThread( ThreadEntryFunction entryFunc,
-                                                      const char * threadName,
-                                                      uint32_t stackSize,
-                                                      void * userData )
+void Thread::Detach()
 {
-    ThreadStartInfo & info = *FNEW( ThreadStartInfo( entryFunc, userData, threadName ) );
-    MemoryBarrier();
+    // TODO:B Remove this unsafe function
+
+    // Must only detach if running and not already joined or detached
+    ASSERT( IsRunning() );
 
     #if defined( __WINDOWS__ )
-        HANDLE h = ::CreateThread( nullptr,     // LPSECURITY_ATTRIBUTES lpThreadAttributes
-                                   stackSize,       // SIZE_T dwStackSize
-                                   (LPTHREAD_START_ROUTINE)ThreadStartInfo::ThreadStartFunction,    // LPTHREAD_START_ROUTINE lpStartAddress
-                                   &info,           // LPVOID lpParameter
-                                   0,               // DWORD dwCreationFlags
-                                   nullptr      // LPDWORD lpThreadId
-                                 );
-        ASSERT( h != nullptr );
-    #elif defined( __LINUX__ ) || defined( __APPLE__ )
-        #if __has_feature( address_sanitizer ) || defined( __SANITIZE_ADDRESS__ )
-            // AddressSanitizer instruments objects created on the stack by inserting redzones around them.
-            // This greatly increases the amount of stack space used by the program.
-            // To account for that double the requested stack size for the thread.
-            stackSize *= 2;
-        #endif
-        // Necessary on Aarch64, where it's 131072 in my tests. Sometimes we ask for 65536.
-        if ( stackSize < PTHREAD_STACK_MIN )
-        {
-            stackSize = PTHREAD_STACK_MIN;
-        }
-        pthread_t h( 0 );
-        pthread_attr_t threadAttr;
-        VERIFY( pthread_attr_init( &threadAttr ) == 0 );
-        VERIFY( pthread_attr_setstacksize( &threadAttr, stackSize ) == 0 );
-        VERIFY( pthread_attr_setdetachstate( &threadAttr, PTHREAD_CREATE_JOINABLE ) == 0 );
-        VERIFY( pthread_create( &h, &threadAttr, ThreadStartInfo::ThreadStartFunction, &info ) == 0 );
-        ASSERT( h != (pthread_t)0 );
-    #else
-        #error Unknown platform
-    #endif
-
-    return (Thread::ThreadHandle)h;
-}
-
-// WaitForThread
-//------------------------------------------------------------------------------
-/*static*/ int32_t Thread::WaitForThread( ThreadHandle handle )
-{
-    #if defined( __WINDOWS__ )
-        bool timedOut = true; // default is true to catch cases when timedOut wasn't set by WaitForThread()
-        const int32_t ret = WaitForThread( handle, INFINITE, timedOut );
-
-        if ( timedOut )
-        {
-            // something is wrong - we were waiting an INFINITE time
-            ASSERT( false );
-            return 0;
-        }
-
-        return ret;
+        VERIFY( ::CloseHandle( m_Handle ) );
     #elif defined( __APPLE__ ) || defined( __LINUX__ )
-        void * ret;
-        if ( pthread_join( (pthread_t)handle, &ret ) == 0 )
-        {
-            return (int)( (size_t)ret );
-        }
-        ASSERT( false ); // usage failure
-        return 0;
+        VERIFY( pthread_detach( (pthread_t)m_Handle ) == 0 );
     #else
         #error Unknown platform
     #endif
+
+    m_Handle = INVALID_THREAD_HANDLE;
 }
 
-// WaitForThread
+// JoinWithTimeout
 //------------------------------------------------------------------------------
-/*static*/ int32_t Thread::WaitForThread( ThreadHandle handle, uint32_t timeoutMS, bool & timedOut )
+uint32_t Thread::JoinWithTimeout( uint32_t timeoutMS, bool & outTimedOut )
 {
-    #if defined( __WINDOWS__ )
-        // wait for thread to finish
-        const DWORD waitResult = WaitForSingleObject( handle, timeoutMS );
+    // TODO:B Remove this unsafe function
 
-        // timed out ?
+    #if defined( __WINDOWS__ )
+        // Wait for thread to finish
+        const DWORD waitResult = WaitForSingleObject( m_Handle, timeoutMS );
+
+        // Timed out?
         if ( waitResult == WAIT_TIMEOUT )
         {
-            timedOut = true;
+            outTimedOut = true;
             return 0;
         }
-        if ( waitResult != WAIT_OBJECT_0 )
-        {
-            // something is wrong - invalid handle?
-            ASSERT( false );
-            timedOut = false;
-            return 0;
-        }
+        VERIFY( waitResult == WAIT_OBJECT_0 ); // Invalid handle?
+        outTimedOut = false;
 
-        // get actual return code
-        DWORD ret( 0 );
-        if ( ::GetExitCodeThread( handle, (LPDWORD)&ret ) )
-        {
-            timedOut = false;
-            return (int32_t)ret;
-        }
-        ASSERT( false ); // invalid thread handle
-        timedOut = false;
-        return -1;
+        // Get return code
+        DWORD ret = 0;
+        VERIFY( ::GetExitCodeThread( m_Handle, (LPDWORD)&ret ) );
+        VERIFY( ::CloseHandle( m_Handle ) );
+        m_Handle = INVALID_THREAD_HANDLE;
+        return ret;
     #elif __has_feature( thread_sanitizer ) || defined( __SANITIZE_THREAD__ )
         // ThreadSanitizer doesn't support pthread_timedjoin_np yet (as of February 2018)
-        timedOut = false;
+        outTimedOut = false;
         (void)timeoutMS;
-        return WaitForThread( handle );
+        return Join();
     #elif defined( __APPLE__ )
-        timedOut = false;
+        outTimedOut = false;
         (void)timeoutMS; // TODO:MAC Implement timeout support
-        return WaitForThread( handle );
+        return Join();
     #elif defined( __LINUX__ )
         // timeout is specified in absolute time
         // - get current time
@@ -253,47 +304,16 @@ public:
 
         // join thread with timeout
         void * ret;
-        int retVal = pthread_timedjoin_np( (pthread_t)handle, &ret, &abstime );
+        int retVal = pthread_timedjoin_np( (pthread_t)m_Handle, &ret, &abstime );
         if ( ( retVal == EBUSY ) || ( retVal == ETIMEDOUT ) )
         {
-            timedOut = true;
+            outTimedOut = true;
             return 0;
         }
-        if ( retVal == 0 )
-        {
-            timedOut = false;
-            return (int)( (size_t)ret );
-        }
-
-        ASSERT( false ); // a non-timeout error indicates usage failure
-        timedOut = false;
-        return 0;
-    #else
-        #error Unknown platform
-    #endif
-}
-
-// DetachThread
-//------------------------------------------------------------------------------
-/*static*/ void Thread::DetachThread( ThreadHandle handle )
-{
-    #if defined( __WINDOWS__ )
-        (void)handle; // Nothing to do
-    #elif defined( __APPLE__ ) || defined( __LINUX__ )
-        VERIFY( pthread_detach( (pthread_t)handle ) == 0 );
-    #else
-        #error Unknown platform
-    #endif
-}
-
-// CloseHandle
-//------------------------------------------------------------------------------
-/*static*/ void Thread::CloseHandle( ThreadHandle h )
-{
-    #if defined( __WINDOWS__ )
-        ::CloseHandle( h );
-    #elif defined( __APPLE__ ) || defined( __LINUX__ )
-        (void)h; // Nothing to do
+        VERIFY( retVal == 0 );
+        m_Handle = INVALID_THREAD_HANDLE;
+        outTimedOut = false;
+        return static_cast<uint32_t>( (size_t)ret );
     #else
         #error Unknown platform
     #endif

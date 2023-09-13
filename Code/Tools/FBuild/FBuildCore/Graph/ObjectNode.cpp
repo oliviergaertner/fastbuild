@@ -95,7 +95,7 @@ REFLECT_END( ObjectNode )
 // CONSTRUCTOR
 //------------------------------------------------------------------------------
 ObjectNode::ObjectNode()
-: FileNode( AString::GetEmpty(), Node::FLAG_NONE )
+    : FileNode()
 {
     m_Type = OBJECT_NODE;
     m_LastBuildTimeMs = 5000; // higher default than a file node
@@ -156,35 +156,36 @@ ObjectNode::ObjectNode()
 
     // Store Dependencies
     m_StaticDependencies.SetCapacity( 1 + 1 + precompiledHeader.GetSize() + ( preprocessor ? 1 : 0 ) + compilerForceUsing.GetSize() );
-    m_StaticDependencies.EmplaceBack( compiler );
-    m_StaticDependencies.Append( compilerInputFile );
-    m_StaticDependencies.Append( precompiledHeader );
+    m_StaticDependencies.Add( compiler );
+    m_StaticDependencies.Add( compilerInputFile );
+    m_StaticDependencies.Add( precompiledHeader );
     if ( preprocessor )
     {
-        m_StaticDependencies.EmplaceBack( preprocessor );
+        m_StaticDependencies.Add( preprocessor );
     }
-    m_StaticDependencies.Append( compilerForceUsing );
+    m_StaticDependencies.Add( compilerForceUsing );
 
     return true;
 }
 
 // CONSTRUCTOR (Remote)
 //------------------------------------------------------------------------------
-ObjectNode::ObjectNode( const AString & objectName,
+ObjectNode::ObjectNode( AString && objectName,
                         NodeProxy * srcFile,
                         const AString & compilerOptions,
                         uint32_t flags )
-: FileNode( objectName, Node::FLAG_NONE )
-, m_CompilerOptions( compilerOptions )
-, m_Remote( true )
+    : FileNode()
+    , m_CompilerOptions( compilerOptions )
+    , m_Remote( true )
 {
+    SetName( Move( objectName ) );
     m_Type = OBJECT_NODE;
     m_LastBuildTimeMs = 5000; // higher default than a file node
     m_CompilerFlags.m_Flags = flags;
 
     m_StaticDependencies.SetCapacity( 2 );
-    m_StaticDependencies.EmplaceBack( nullptr );
-    m_StaticDependencies.EmplaceBack( srcFile );
+    m_StaticDependencies.Add( nullptr );
+    m_StaticDependencies.Add( srcFile );
 }
 
 // DESTRUCTOR
@@ -294,7 +295,7 @@ ObjectNode::~ObjectNode()
         Node * fn = nodeGraph.FindNode( *it );
         if ( fn == nullptr )
         {
-            fn = nodeGraph.CreateFileNode( *it );
+            fn = nodeGraph.CreateNode<FileNode>( *it );
         }
         else if ( fn->IsAFile() == false )
         {
@@ -311,7 +312,7 @@ ObjectNode::~ObjectNode()
             fn->CastTo< FileNode >()->DoBuild( nullptr );
         }
 
-        m_DynamicDependencies.EmplaceBack( fn );
+        m_DynamicDependencies.Add( fn );
     }
 
     Node::Finalize( nodeGraph );
@@ -893,8 +894,8 @@ bool ObjectNode::ProcessIncludesWithPreProcessor( Job * job )
 //------------------------------------------------------------------------------
 /*static*/ Node * ObjectNode::LoadRemote( IOStream & stream )
 {
-    AStackString<> name;
-    AStackString<> sourceFile;
+    AString name;
+    AString sourceFile;
     uint32_t flags;
     AStackString<> compilerArgs;
     if ( ( stream.Read( name ) == false ) ||
@@ -905,9 +906,9 @@ bool ObjectNode::ProcessIncludesWithPreProcessor( Job * job )
         return nullptr;
     }
 
-    NodeProxy * srcFile = FNEW( NodeProxy( sourceFile ) );
+    NodeProxy * srcFile = FNEW( NodeProxy( Move( sourceFile ) ) );
 
-    return FNEW( ObjectNode( name, srcFile, compilerArgs, flags ) );
+    return FNEW( ObjectNode( Move( name ), srcFile, compilerArgs, flags ) );
 }
 
 // DetermineFlags
@@ -1041,6 +1042,8 @@ bool ObjectNode::ProcessIncludesWithPreProcessor( Job * job )
             flags.Set( CompilerFlags::FLAG_DIAGNOSTICS_COLOR_AUTO );
         }
 
+        bool coverage = false;
+
         Array< AString > tokens;
         args.Tokenize( tokens );
         const AString * const end = tokens.End();
@@ -1056,7 +1059,21 @@ bool ObjectNode::ProcessIncludesWithPreProcessor( Job * job )
             {
                 flags.Clear( CompilerFlags::FLAG_DIAGNOSTICS_COLOR_AUTO );
             }
-            else if ( token.BeginsWith( "-werror" ) )
+            else if ( token == "-ftest-coverage" )
+            {
+                flags.Set( CompilerFlags::FLAG_GCOV_COVERAGE );
+            }
+            else if ( token == "-fno-test-coverage" )
+            {
+                flags.Clear( CompilerFlags::FLAG_GCOV_COVERAGE );
+            }
+            else if ( token == "--coverage" )
+            {
+                // --coverage implies -ftest-coverage.
+                // But unlike -ftest-coverage it can't be reverted with -fno-test-coverage, so we need to handle it after the loop.
+                coverage = true;
+            }
+            else if ( token.BeginsWith( "-Werror" ) )
             {
                 flags.Set( CompilerFlags::FLAG_WARNINGS_AS_ERRORS_CLANGGCC );
             }
@@ -1076,6 +1093,11 @@ bool ObjectNode::ProcessIncludesWithPreProcessor( Job * job )
                 }
             }
         }
+
+        if ( coverage )
+        {
+            flags.Set( CompilerFlags::FLAG_GCOV_COVERAGE );
+        }
     }
 
     // check for cacheability/distributability for non-MSVC
@@ -1085,10 +1107,13 @@ bool ObjectNode::ProcessIncludesWithPreProcessor( Job * job )
          flags.IsCodeWarriorWii() ||
          flags.IsGreenHillsWiiU() )
     {
-        // creation of the PCH must be done locally to generate a usable PCH
-        // Objective C/C++ cannot be distributed
-        // Source mappings are not currently forwarded so can only compiled locally
-        if ( !creatingPCH && !objectiveC && !hasSourceMapping )
+        // * Creation of the PCH must be done locally to generate a usable PCH
+        // * Objective C/C++ cannot be distributed
+        // * Source mappings are not currently forwarded so can only compiled locally
+        // * Remote compilation with Gcov coverage is disabled as it has some issues:
+        //   1. .gcno files will contain incorrect build root path (working directory on the worker).
+        //   2. Object files compiled remotely will create .gcda files in the directory where these object files were stored on the worker.
+        if ( !creatingPCH && !objectiveC && !hasSourceMapping && !flags.IsUsingGcovCoverage() )
         {
             if ( isDistributableCompiler )
             {
@@ -1269,6 +1294,18 @@ void ObjectNode::GetNativeAnalysisXMLPath( AString& outXMLFileName ) const
     outXMLFileName += ".nativecodeanalysis.xml";
 }
 
+// GetGCNOPath
+//------------------------------------------------------------------------------
+void ObjectNode::GetGCNOPath( AString & gcnoFileName ) const
+{
+    ASSERT( IsUsingGcovCoverage() );
+
+    // TODO:B The .gcno path can be manually specified with -fprofile-note=
+    const char * extPos = m_Name.FindLast( '.' ); // Only last extension removed
+    gcnoFileName.Assign( m_Name.Get(), extPos ? extPos : m_Name.GetEnd() );
+    gcnoFileName += ".gcno";
+}
+
 // GetObjExtension
 //------------------------------------------------------------------------------
 const char * ObjectNode::GetObjExtension() const
@@ -1298,7 +1335,7 @@ const AString & ObjectNode::GetCacheName( Job * job ) const
 
     // hash the pre-processed input data
     ASSERT( m_LightCacheKey || job->GetData() );
-    const uint64_t preprocessedSourceKey = m_LightCacheKey ? m_LightCacheKey : xxHash::Calc64( job->GetData(), job->GetDataSize() );
+    const uint64_t preprocessedSourceKey = m_LightCacheKey ? m_LightCacheKey : xxHash3::Calc64( job->GetData(), job->GetDataSize() );
     ASSERT( preprocessedSourceKey );
 
     // hash the build "environment"
@@ -1372,9 +1409,9 @@ bool ObjectNode::RetrieveFromCache( Job * job )
         uint64_t pchKey = 0;
         if ( IsCreatingPCH() && IsMSVC() )
         {
-            pchKey = xxHash::Calc64( cacheData, cacheDataSize );
+            pchKey = xxHash3::Calc64( cacheData, cacheDataSize );
         }
-        
+
         const uint32_t startDecompress = uint32_t( t.GetElapsedMS() );
 
         MultiBuffer buffer( cacheData, cacheDataSize );
@@ -1554,7 +1591,7 @@ void ObjectNode::WriteToCache_FromCompressedData( Job * job,
         // Dependent objects need to know the PCH key to be able to pull from the cache
         if ( IsCreatingPCH() && IsMSVC() )
         {
-            m_PCHCacheKey = xxHash::Calc64( compressedData, compressedDataSize );
+            m_PCHCacheKey = xxHash3::Calc64( compressedData, compressedDataSize );
         }
 
         const uint32_t cachingTime = uint32_t( t.GetElapsedMS() );
@@ -1599,21 +1636,16 @@ void ObjectNode::GetExtraCacheFilePaths( const Job * job, Array< AString > & out
         return;
     }
 
-    // Only the MSVC compiler creates extra objects
     const ObjectNode * objectNode = node->CastTo< ObjectNode >();
-    if ( objectNode->m_CompilerFlags.IsMSVC() == false )
-    {
-        return;
-    }
 
-    // Precompiled Headers have an extra file
-    if ( objectNode->m_CompilerFlags.IsCreatingPCH() )
+    // MSVC precompiled headers have an extra file
+    if ( objectNode->m_CompilerFlags.IsCreatingPCH() && objectNode->m_CompilerFlags.IsMSVC() )
     {
         // .pch.obj
         outFileNames.Append( m_PCHObjectFileName );
     }
 
-    // Static analysis adds extra files
+    // MSVC static analysis adds extra files
     if ( objectNode->m_CompilerFlags.IsUsingStaticAnalysisMSVC() )
     {
         if ( objectNode->m_CompilerFlags.IsCreatingPCH() )
@@ -1637,6 +1669,15 @@ void ObjectNode::GetExtraCacheFilePaths( const Job * job, Array< AString > & out
         AStackString<> xmlFileName;
         GetNativeAnalysisXMLPath( xmlFileName );
         outFileNames.Append( xmlFileName );
+    }
+
+    // Gcov coverage adds extra file
+    if ( objectNode->m_CompilerFlags.IsUsingGcovCoverage() )
+    {
+        // .gcno
+        AStackString<> gcnoFileName;
+        GetGCNOPath( gcnoFileName );
+        outFileNames.Append( gcnoFileName );
     }
 }
 
@@ -2289,13 +2330,13 @@ bool ObjectNode::CompileHelper::SpawnCompiler( Job * job,
             {
                 Thread::Sleep( 1 );
             }
-            
+
             // Add fake failure
             ASSERT( m_Result == 0 ); // Should not have real failures if we're faking them
             m_Result = 1;
             job->Error( "Injecting system failure (sFakeSystemFailure)\n" );
             job->OnSystemError();
-            
+
             // Clear failure state
             sFakeSystemFailureState.Store( DISABLED );
         }
@@ -2366,6 +2407,7 @@ bool ObjectNode::CompileHelper::SpawnCompiler( Job * job,
     #if defined( __WINDOWS__ )
         // If remote PC is shutdown by user, compiler can be terminated
         if ( ( (uint32_t)result == 0x40010004 ) || // DBG_TERMINATE_PROCESS
+             ( (uint32_t)result == 0xC000013A ) || // STATUS_CONTROL_C_EXIT - Occurs if remote user forcibly ended the process
              ( (uint32_t)result == 0xC0000142 ) )  // STATUS_DLL_INIT_FAILED - Occurs if remote PC is stuck on force reboot dialog during shutdown
         {
             job->OnSystemError(); // task will be retried on another worker
@@ -2376,7 +2418,7 @@ bool ObjectNode::CompileHelper::SpawnCompiler( Job * job,
         // be 1. There seems to be no definitive way to differentiate this from
         // a process exiting with return code 1, so we default to considering it a
         // system failure, unless we can detect some specific situations.
-        if ( result == 0x1 )
+        if ( result == 0x1 ) // ERROR_INVALID_FUNCTION
         {
             bool treatAsSystemError = true;
 
@@ -2393,6 +2435,13 @@ bool ObjectNode::CompileHelper::SpawnCompiler( Job * job,
                 job->OnSystemError(); // task will be retried on another worker
                 return;
             }
+        }
+
+        // This error was observed remotely without a clear cause
+        if ( result == 0x4 ) // ERROR_TOO_MANY_OPEN_FILES
+        {
+            job->OnSystemError(); // task will be retried on another worker
+            return;
         }
 
         // If DLLs are not correctly sync'd, add an extra message to help the user
@@ -2502,7 +2551,7 @@ bool ObjectNode::CompileHelper::SpawnCompiler( Job * job,
         }
     }
 
-    #if !defined( __WINDOWS__) 
+    #if !defined( __WINDOWS__)
         (void)stdOut; // No checks use stdOut outside of Windows right now
     #endif
 }

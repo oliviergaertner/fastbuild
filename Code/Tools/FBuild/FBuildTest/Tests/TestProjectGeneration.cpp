@@ -7,6 +7,7 @@
 
 // FBuildCore
 #include "Tools/FBuild/FBuildCore/FBuild.h"
+#include "Tools/FBuild/FBuildCore/Graph/DirectoryListNode.h"
 #include "Tools/FBuild/FBuildCore/Graph/NodeGraph.h"
 #include "Tools/FBuild/FBuildCore/Graph/VCXProjectNode.h"
 #include "Tools/FBuild/FBuildCore/Helpers/ProjectGeneratorBase.h"
@@ -42,6 +43,7 @@ private:
     void VCXProj_Folders() const;
     void VCXProj_ProjectRelativePaths() const;
     void VCXProj_ProjectRelativePaths2() const;
+    void VCXProj_InputPaths() const;
 
     // Solution
     void Solution_Empty() const;
@@ -81,6 +83,7 @@ REGISTER_TESTS_BEGIN( TestProjectGeneration )
     REGISTER_TEST( VCXProj_Folders )
     REGISTER_TEST( VCXProj_ProjectRelativePaths )
     REGISTER_TEST( VCXProj_ProjectRelativePaths2 )
+    REGISTER_TEST( VCXProj_InputPaths )
     REGISTER_TEST( Solution_Empty )
     REGISTER_TEST( Solution_SolutionRelativePaths )
     REGISTER_TEST( Solution_BuildAndDeploy_None )
@@ -1091,6 +1094,59 @@ void TestProjectGeneration::VCXProj_ProjectRelativePaths2() const
     }
 }
 
+// VCXProj_InputPaths
+//------------------------------------------------------------------------------
+void TestProjectGeneration::VCXProj_InputPaths() const
+{
+    // Initialize
+    FBuildTestOptions options;
+    options.m_ConfigFile = "Tools/FBuild/FBuildTest/Data/TestProjectGeneration/VCXProj_InputPaths/fbuild.bff";
+    FBuildForTest fBuild( options );
+    TEST_ASSERT( fBuild.Initialize() );
+
+    // Delete files from previous builds
+    EnsureFileDoesNotExist( "../tmp/Test/ProjectGeneration/VCXProj_InputPaths/Default.vcxproj" );
+    EnsureFileDoesNotExist( "../tmp/Test/ProjectGeneration/VCXProj_InputPaths/NoRecurse.vcxproj" );
+
+    // Do build
+    TEST_ASSERT( fBuild.Build( "All" ) );
+
+    // Find VCXProject nodes
+    Array<const Node *> nodes;
+    fBuild.GetNodesOfType( Node::VCXPROJECT_NODE, nodes );
+    TEST_ASSERT( nodes.GetSize() == 2 );
+
+    for ( const Node * projNode : nodes )
+    {
+        const Dependencies & deps = projNode->GetStaticDependencies();
+        TEST_ASSERT( deps.GetSize() == 1 );
+        TEST_ASSERT( deps[0].GetNode()->GetType() == Node::Type::DIRECTORY_LIST_NODE );
+        const DirectoryListNode * dirNode = deps[ 0 ].GetNode()->CastTo<DirectoryListNode>();
+        bool rootItemFound = false;
+        bool subdirItemFound = false;
+        for ( const FileIO::FileInfo & info : dirNode->GetFiles() )
+        {
+            rootItemFound |= info.m_Name.EndsWith( "root_item.cpp" );
+            subdirItemFound |= info.m_Name.EndsWith( "subdir_item.cpp" );
+        }
+
+        if ( projNode->GetName().EndsWith( "Default.vcxproj" ) )
+        {
+            TEST_ASSERT( dirNode->GetFiles().GetSize() == 2 );
+            TEST_ASSERT( rootItemFound && subdirItemFound );
+        }
+        else if ( projNode->GetName().EndsWith( "NoRecurse.vcxproj" ) )
+        {
+            TEST_ASSERT( dirNode->GetFiles().GetSize() == 1 );
+            TEST_ASSERT( rootItemFound && !subdirItemFound );
+        }
+        else
+        {
+            TEST_ASSERTM( false, "Unknown project found" );
+        }
+    }
+}
+
 // Solution_Empty
 //------------------------------------------------------------------------------
 void TestProjectGeneration::Solution_Empty() const
@@ -1337,7 +1393,7 @@ void TestProjectGeneration::VSExternalProj_ExternalProject() const
     CheckStatsNode( 1,      1,      Node::ALIAS_NODE );
 
     // because of the external module, peek how many of them were actually processed, depending if using the module is
-    // enforced or not in the actual fbuild.bff 
+    // enforced or not in the actual fbuild.bff
     const FBuildStats& stats = FBuild::Get().GetStats();
     const FBuildStats::Stats& nodeStatsExternal = stats.GetStatsFor( Node::VSPROJEXTERNAL_NODE );
     const size_t actualNumExtSeen = nodeStatsExternal.m_NumProcessed;

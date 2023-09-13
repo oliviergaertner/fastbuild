@@ -36,6 +36,7 @@ REFLECT_NODE_BEGIN( ExecNode, Node, MetaName( "ExecOutput" ) + MetaFile() )
     REFLECT(        m_ExecUseStdOutAsOutput,    "ExecUseStdOutAsOutput",    MetaOptional() )
     REFLECT(        m_ExecAlways,               "ExecAlways",               MetaOptional() )
     REFLECT_ARRAY(  m_PreBuildDependencyNames,  "PreBuildDependencies",     MetaOptional() + MetaFile() + MetaAllowNonFile() )
+    REFLECT_ARRAY(  m_Environment,              "Environment",              MetaOptional() )
 
     // Internal State
     REFLECT(        m_NumExecInputFiles,        "NumExecInputFiles",        MetaHidden() )
@@ -44,7 +45,7 @@ REFLECT_END( ExecNode )
 // CONSTRUCTOR
 //------------------------------------------------------------------------------
 ExecNode::ExecNode()
-    : FileNode( AString::GetEmpty(), Node::FLAG_NONE )
+    : FileNode()
     , m_ExecReturnCode( 0 )
     , m_ExecAlwaysShowOutput( false )
     , m_ExecUseStdOutAsOutput( false )
@@ -104,20 +105,23 @@ ExecNode::ExecNode()
 
     // Store Static Dependencies
     m_StaticDependencies.SetCapacity( 1 + m_NumExecInputFiles + execInputPaths.GetSize() );
-    m_StaticDependencies.Append( executable );
-    m_StaticDependencies.Append( execInputFiles );
-    m_StaticDependencies.Append( execInputPaths );
+    m_StaticDependencies.Add( executable );
+    m_StaticDependencies.Add( execInputFiles );
+    m_StaticDependencies.Add( execInputPaths );
 
     return true;
 }
 
 // DESTRUCTOR
 //------------------------------------------------------------------------------
-ExecNode::~ExecNode() = default;
+ExecNode::~ExecNode()
+{
+    FREE( (void *)m_EnvironmentString );
+}
 
 // DoDynamicDependencies
 //------------------------------------------------------------------------------
-/*virtual*/ bool ExecNode::DoDynamicDependencies( NodeGraph & nodeGraph, bool /*forceClean*/ )
+/*virtual*/ bool ExecNode::DoDynamicDependencies( NodeGraph & nodeGraph )
 {
     // clear dynamic deps from previous passes
     m_DynamicDependencies.Clear();
@@ -141,7 +145,7 @@ ExecNode::~ExecNode() = default;
             Node * sn = nodeGraph.FindNode( file.m_Name );
             if ( sn == nullptr )
             {
-                sn = nodeGraph.CreateFileNode( file.m_Name );
+                sn = nodeGraph.CreateNode<FileNode>( file.m_Name );
             }
             else if ( sn->IsAFile() == false )
             {
@@ -149,23 +153,23 @@ ExecNode::~ExecNode() = default;
                 return false;
             }
 
-            m_DynamicDependencies.EmplaceBack( sn );
+            m_DynamicDependencies.Add( sn );
         }
     }
 
     return true;
 }
 
-// DetermineNeedToBuild
+// DetermineNeedToBuildStatic
 //------------------------------------------------------------------------------
-/*virtual*/ bool ExecNode::DetermineNeedToBuild( const Dependencies & deps ) const
+/*virtual*/ bool ExecNode::DetermineNeedToBuildStatic() const
 {
     if ( m_ExecAlways )
     {
         FLOG_BUILD_REASON( "Need to build '%s' (ExecAlways = true)\n", GetName().Get() );
         return true;
     }
-    return Node::DetermineNeedToBuild( deps );
+    return Node::DetermineNeedToBuildStatic();
 }
 
 // DoBuild
@@ -179,14 +183,16 @@ ExecNode::~ExecNode() = default;
     AStackString< 4 * KILOBYTE > fullArgs;
     GetFullArgs(fullArgs);
 
+    const char * environment = Node::GetEnvironmentString( m_Environment, m_EnvironmentString );
+
     EmitCompilationMessage( fullArgs );
 
     // spawn the process
     Process p( FBuild::Get().GetAbortBuildPointer() );
     const bool spawnOK = p.Spawn( GetExecutable()->GetName().Get(),
-                                  fullArgs.Get(),
-                                  workingDir,
-                                  FBuild::Get().GetEnvironmentString() );
+                            fullArgs.Get(),
+                            workingDir,
+                            environment );
 
     if ( !spawnOK )
     {
@@ -211,7 +217,7 @@ ExecNode::~ExecNode() = default;
         return NODE_RESULT_FAILED;
     }
     const bool buildFailed = ( result != m_ExecReturnCode );
-    
+
     // Print output if appropriate
     if ( buildFailed ||
         m_ExecAlwaysShowOutput ||

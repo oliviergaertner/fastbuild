@@ -17,6 +17,7 @@
 //------------------------------------------------------------------------------
 class BFFToken;
 class CompilerNode;
+class ConstMemoryStream;
 class FileNode;
 class Function;
 class IMetaData;
@@ -101,8 +102,6 @@ public:
         STATS_BUILT_REMOTE  = 0x40, // node was built remotely
         STATS_FAILED        = 0x80, // node needed building, but failed
         STATS_FIRST_BUILD   = 0x100,// node has never been built before
-        STATS_REPORT_PROCESSED  = 0x4000, // seen during report processing
-        STATS_STATS_PROCESSED   = 0x8000 // mark during stats gathering (leave this last)
     };
 
     enum BuildResult
@@ -115,20 +114,19 @@ public:
 
     enum State : uint8_t
     {
-        NOT_PROCESSED,      // no work done (either not part of this build, or waiting on static dependencies )
-        PRE_DEPS_READY,     // pre-build deps processed
-        STATIC_DEPS_READY,  // static dependencies are uptodate - we are ready to DoDynamicDeps
-        DYNAMIC_DEPS_DONE,  // dynamic deps updated, waiting for dynamic deps to be ready
+        NOT_PROCESSED,      // no work done (either not part of this build, or not yet seen)
+        STATIC_DEPS,        // pre-build deps processed and checking static deps
+        DYNAMIC_DEPS,       // dynamic deps regenerated and being checked
         BUILDING,           // in the queue for building
         FAILED,             // failed to build
         UP_TO_DATE,         // built, or confirmed as not needing building
     };
 
-    explicit Node( const AString & name, Type type, uint8_t controlFlags );
+    explicit Node( Type type );
     virtual bool Initialize( NodeGraph & nodeGraph, const BFFToken * funcStartIter, const Function * function ) = 0;
     virtual ~Node();
 
-    inline uint32_t        GetNameCRC() const { return m_NameCRC; }
+    uint32_t        GetNameHash() const { return m_NameHash; }
     inline Type GetType() const { return m_Type; }
     inline const char * GetTypeName() const { return s_NodeTypeNames[ m_Type ]; }
     inline static const char * GetTypeName( Type t ) { return s_NodeTypeNames[ t ]; }
@@ -151,9 +149,10 @@ public:
     inline uint32_t GetProgressAccumulator() const { return m_ProgressAccumulator; }
     inline void     SetProgressAccumulator( uint32_t p ) const { m_ProgressAccumulator = p; }
 
-    static Node *   CreateNode( NodeGraph & nodeGraph, Node::Type nodeType, const AString & name );
-    static Node *   Load( NodeGraph & nodeGraph, IOStream & stream );
+    static Node *   Load( NodeGraph & nodeGraph, ConstMemoryStream & stream );
+    static void     LoadDependencies( NodeGraph & nodeGraph, Node * node, ConstMemoryStream & stream );
     static void     Save( IOStream & stream, const Node * node );
+    static void     SaveDependencies( IOStream & stream, const Node * node );
     virtual void    PostLoad( NodeGraph & nodeGraph ); // TODO:C Eliminate the need for this function
 
     static Node *   LoadRemote( IOStream & stream );
@@ -163,8 +162,6 @@ public:
     static bool DoPreBuildFileDeletion( const AString & fileName );
 
     inline uint64_t GetStamp() const { return m_Stamp; }
-
-    inline uint32_t GetIndex() const { return m_Index; }
 
     static void DumpOutput( Job * job,
                             const AString & output,
@@ -179,15 +176,13 @@ public:
 
     bool IsHidden() const { return m_Hidden; }
 
-    #if defined( DEBUG )
-        // Help catch serialization errors
-        inline bool IsSaved() const     { return m_IsSaved; }
-        inline void MarkAsSaved() const { m_IsSaved = true; }
-    #endif
-
     inline const Dependencies & GetPreBuildDependencies() const { return m_PreBuildDependencies; }
     inline const Dependencies & GetStaticDependencies() const { return m_StaticDependencies; }
     inline const Dependencies & GetDynamicDependencies() const { return m_DynamicDependencies; }
+
+    static uint32_t CalcNameHash( const AString & name );
+
+    static void CleanMessageToPreventMSBuildFailure( const AString & msg, AString & outMsg );
 
 protected:
     friend class FBuild;
@@ -202,7 +197,7 @@ protected:
     friend class WorkerThread;
     friend class CompilationDatabase;
 
-    void SetName( const AString & name );
+    void SetName( AString && name );
 
     void ReplaceDummyName( const AString & newName );
 
@@ -212,14 +207,15 @@ protected:
 
     inline void SetState( State state ) { m_State = state; }
 
-    inline void SetIndex( uint32_t index ) { m_Index = index; }
-
-    // each node must implement these core functions
-    virtual bool DoDynamicDependencies( NodeGraph & nodeGraph, bool forceClean );
-    virtual bool DetermineNeedToBuild( const Dependencies & deps ) const;
+    // each node implements a subset of these as needed
+    virtual bool DetermineNeedToBuildStatic() const;
+    virtual bool DetermineNeedToBuildDynamic() const;
+    virtual bool DoDynamicDependencies( NodeGraph & nodeGraph );
     virtual BuildResult DoBuild( Job * job );
     virtual BuildResult DoBuild2( Job * job, bool racingRemoteJob );
     virtual bool Finalize( NodeGraph & nodeGraph );
+
+    bool DetermineNeedToBuild( const Dependencies & deps ) const;
 
     void SetLastBuildTime( uint32_t ms );
     inline void     AddProcessingTime( uint32_t ms )  { m_ProcessingTime += ms; }
@@ -233,8 +229,8 @@ protected:
 
     static void Serialize( IOStream & stream, const void * base, const ReflectionInfo & ri );
     static void Serialize( IOStream & stream, const void * base, const ReflectedProperty & property );
-    static bool Deserialize( IOStream & stream, void * base, const ReflectionInfo & ri );
-    static bool Deserialize( IOStream & stream, void * base, const ReflectedProperty & property );
+    static void Deserialize( ConstMemoryStream & stream, void * base, const ReflectionInfo & ri );
+    static void Deserialize( ConstMemoryStream & stream, void * base, const ReflectedProperty & property );
 
     virtual void Migrate( const Node & oldNode );
 
@@ -256,20 +252,16 @@ protected:
     mutable uint16_t    m_StatsFlags = 0;           // Stats recorded in the current build
     mutable uint32_t    m_BuildPassTag = 0;         // Prevent multiple recursions into the same node during a single sweep
     uint64_t            m_Stamp = 0;                // "Stamp" representing this node for dependency comparissons
-    uint8_t             m_ControlFlags;             // Control build behavior special cases - Set by constructor
+    uint8_t             m_ControlFlags = FLAG_NONE; // Control build behavior special cases - Set by constructor
     bool                m_Hidden = false;           // Hidden from -showtargets?
-    #if defined( DEBUG )
-        mutable bool    m_IsSaved = false;          // Help catch serialization errors
-    #endif
-    // Note: Unused byte here
+    // Note: Unused 2 bytes here
     uint32_t            m_RecursiveCost = 0;        // Recursive cost used during task ordering
     Node *              m_Next = nullptr;           // Node map in-place linked list pointer
-    uint32_t            m_NameCRC;                  // Hash of mName. **Set by constructor**
+    uint32_t            m_NameHash;                 // Hash of mName
     uint32_t            m_LastBuildTimeMs = 0;      // Time it took to do last known full build of this node
     uint32_t            m_ProcessingTime = 0;       // Time spent on this node during this build
     uint32_t            m_CachingTime = 0;          // Time spent caching this node
     mutable uint32_t    m_ProgressAccumulator = 0;  // Used to estimate build progress percentage
-    uint32_t            m_Index = INVALID_NODE_INDEX;   // Index into flat array of all nodes
 
     Dependencies        m_PreBuildDependencies;
     Dependencies        m_StaticDependencies;

@@ -99,7 +99,7 @@ Settings
 ]
 .Fuzzer_Config =
 [
-    #if USING_CLANG_6
+    #if !USING_CLANG_3
         // These options are valid for Clang >= 6.0.0:
         .CompilerOptions                = ' -fsanitize=fuzzer-no-link'
     #else
@@ -388,12 +388,19 @@ Settings
 .Targets_x64OSX_Debug = {}
 .Targets_x64OSX_Profile = {}
 .Targets_x64OSX_Release = {}
-.Targets_ARMOSX_Debug = {}
-.Targets_ARMOSX_Profile = {}
-.Targets_ARMOSX_Release = {}
+#if CLANG_SUPPORTS_ARMOSX
+    .Targets_ARMOSX_Debug = {}
+    .Targets_ARMOSX_Profile = {}
+    .Targets_ARMOSX_Release = {}
+    .Targets_OSX_Debug = {}
+    .Targets_OSX_Profile = {}
+    .Targets_OSX_Release = {}
+#endif
 
 // External
 #include "..\External\LZ4\LZ4.bff"
+#include "../External/xxHash/xxHash.bff"
+#include "../External/Zstd/Zstd.bff"
 
 // Test Framework
 #include "TestFramework\TestFramework.bff"
@@ -419,6 +426,14 @@ ForEach( .BuildConfig in .BuildConfigs )
     Using( .BuildConfig )
 
     Alias( 'All-$Platform$-$BuildConfigName$' ) { .Targets = .'Targets_$Platform$_$BuildConfigName$' }
+
+    // Create additional Universal targets
+    #if CLANG_SUPPORTS_ARMOSX
+        If( .Platform == 'ARMOSX' )
+        {
+            Alias( 'All-OSX-$BuildConfigName$' ) { .Targets = .'Targets_OSX_$BuildConfigName$' }
+        }
+    #endif
 }
 
 // Exes
@@ -431,16 +446,30 @@ Alias( 'Exes' )
 
 // Aliases : All-$Platform$
 //------------------------------------------------------------------------------
-.Platforms = { 'x64', 'x64Clang', 'x64Linux', 'x64ClangLinux', 'x64OSX', 'ARMOSX' }
+.Platforms =
+{
+    'x64',
+    'x64Clang',
+    'x64Linux',
+    'x64ClangLinux',
+    'x64OSX'
+    #if CLANG_SUPPORTS_ARMOSX
+        'ARMOSX'
+        'OSX'
+    #endif
+}
 .PlatformConfigs_x64           = { 'Debug', 'Analyze', 'Profile', 'Release', 'ASan', 'TSan' }
 .PlatformConfigs_x64Clang      = { 'Debug', 'Analyze', 'Profile', 'Release', 'ASan', 'TSan' }
 .PlatformConfigs_x64Linux      = { 'Debug', 'Profile', 'Release', 'ASan', 'TSan' }
 .PlatformConfigs_x64ClangLinux = { 'Debug', 'Profile', 'Release' }
-#if USING_CLANG_6
+#if !USING_CLANG_3
                                + { 'ASan', 'MSan', 'TSan' }
 #endif
 .PlatformConfigs_x64OSX        = { 'Debug', 'Profile', 'Release' }
-.PlatformConfigs_ARMOSX        = { 'Debug', 'Profile', 'Release' }
+#if CLANG_SUPPORTS_ARMOSX
+    .PlatformConfigs_ARMOSX         = { 'Debug', 'Profile', 'Release' }
+    .PlatformConfigs_OSX            = { 'Debug', 'Profile', 'Release' }
+#endif
 ForEach( .Platform in .Platforms )
 {
     Alias( 'All-$Platform$' )
@@ -479,9 +508,10 @@ ForEach( .Platform in .Platforms )
 #if __OSX__
     Alias( 'All' )
     {
-        .Targets        = { 'All-x64OSX' }
-        #if CLANG_SUPPORTS_OSXARM
-                        + { 'All-ARMOSX' }
+        #if CLANG_SUPPORTS_ARMOSX
+            .Targets        = { 'All-OSX' }     // X64, ARM & Universal
+        #else
+            .Targets        = { 'All-x64OSX' }  // X64 only
         #endif
     }
 #endif
@@ -574,7 +604,7 @@ Alias( 'All+Tests' )
         ForEach( .BuildConfig in .BuildConfigs )
         {
             Using( .BuildConfig )
-            .ProjectConfig          = [ 
+            .ProjectConfig          = [
                                         Using( .'Project_$Platform$_$BuildConfigName$' )
                                         .ProjectBuildCommand    = 'cd ^$(SolutionDir)\..\..\Code\ &amp; fbuild solution -vs'
                                         .ProjectRebuildCommand  = 'cd ^$(SolutionDir)\..\..\Code\ &amp; fbuild solution -vs -clean'
@@ -628,7 +658,7 @@ Alias( 'All+Tests' )
         .Folder_External =
         [
             .Path           = 'External'
-            .Projects       = { 'LZ4-proj', 'SDKs-proj' }
+            .Projects       = { 'LZ4-proj', 'SDKs-proj', 'xxHash-proj', 'Zstd-proj' }
         ]
         .Folder_Test =
         [
@@ -668,7 +698,9 @@ Alias( 'All+Tests' )
                                         'FBuildWorker-xcodeproj'
                                         'LZ4-xcodeproj'
                                         'OSUI-xcodeproj'
-                                        'TestFramework-xcodeproj' }
+                                        'TestFramework-xcodeproj'
+                                        'xxHash-xcodeproj'
+                                        'Zstd-xcodeproj' }
         .ProjectConfigs = {}
         ForEach( .BuildConfig in .BuildConfigs )
         {
