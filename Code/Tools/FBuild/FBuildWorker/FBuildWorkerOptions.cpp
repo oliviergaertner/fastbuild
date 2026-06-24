@@ -44,9 +44,6 @@ bool FBuildWorkerOptions::ProcessCommandLine( const AString & commandLine )
         if ( token == "-console" )
         {
             m_ConsoleMode = true;
-    #if defined( __WINDOWS__ )
-            m_UseSubprocess = false;
-    #endif
             continue;
         }
 #endif
@@ -148,7 +145,7 @@ void FBuildWorkerOptions::ShowUsageError()
 {
     AStackString msg;
     msg.Format( "FBuildWorker.exe - %s\n", GetVersionString() );
-    msg.Append( "Copyright 2012-2025 Franta Fulin - https://www.fastbuild.org\n"
+    msg.Append( "Copyright 2012-2026 Franta Fulin - https://www.fastbuild.org\n"
                 "\n"
                 "Command Line Options:\n"
                 "---------------------------------------------------------------------------\n"

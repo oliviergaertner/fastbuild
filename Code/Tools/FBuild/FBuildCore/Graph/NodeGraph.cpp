@@ -15,6 +15,7 @@
 
 #include "AliasNode.h"
 #include "CSNode.h"
+#include "CompilerInfoNode.h"
 #include "CompilerNode.h"
 #include "CopyDirNode.h"
 #include "CopyFileNode.h"
@@ -896,6 +897,7 @@ Node * NodeGraph::CreateNode( Node::Type type, AString && name, uint32_t nameHas
         case Node::SETTINGS_NODE: node = FNEW( SettingsNode() ); break;
         case Node::TEXT_FILE_NODE: node = FNEW( TextFileNode() ); break;
         case Node::LIST_DEPENDENCIES_NODE: node = FNEW( ListDependenciesNode() ); break;
+        case Node::COMPILER_INFO_NODE: node = FNEW( CompilerInfoNode() ); break;
         case Node::NUM_NODE_TYPES: ASSERT( false ); return nullptr;
     }
 
@@ -2090,11 +2092,25 @@ void NodeGraph::MigrateProperty( const void * oldBase, void * newBase, const Ref
         }
         case PT_CUSTOM_1:
         {
-            ASSERT( property.IsArray() == false );
-            const Node * oldNode = *property.GetPtrToPropertyCustom<Node *>( oldBase );
-            Node * newNode = FindNodeInternal( oldNode->GetName(), oldNode->GetNameHash() );
-            Node ** newNodeProperty = property.GetPtrToPropertyCustom<Node *>( newBase );
-            *newNodeProperty = newNode;
+            if ( property.IsArray() )
+            {
+                const Array<Node *> & oldNodes = *property.GetPtrToArray<Node *>( oldBase );
+                Array<Node *> & newNodes = *property.GetPtrToArray<Node *>( newBase );
+                newNodes.SetCapacity( oldNodes.GetSize() );
+                for ( const Node * oldNode : oldNodes )
+                {
+                    Node * newNode = FindNodeInternal( oldNode->GetName(), oldNode->GetNameHash() );
+                    ASSERT( newNode );
+                    newNodes.EmplaceBack( newNode );
+                }
+            }
+            else
+            {
+                const Node * oldNode = *property.GetPtrToPropertyCustom<Node *>( oldBase );
+                Node * newNode = FindNodeInternal( oldNode->GetName(), oldNode->GetNameHash() );
+                Node ** newNodeProperty = property.GetPtrToPropertyCustom<Node *>( newBase );
+                *newNodeProperty = newNode;
+            }
             break;
         }
         default: ASSERT( false ); // Unhandled
@@ -2255,14 +2271,34 @@ void NodeGraph::MigrateProperty( const void * oldBase, void * newBase, const Ref
         }
         case PT_CUSTOM_1:
         {
-            ASSERT( property.IsArray() == false );
-            const Node * nodeA = *property.GetPtrToPropertyCustom<Node *>( baseA );
-            const Node * nodeB = *property.GetPtrToPropertyCustom<Node *>( baseB );
-            const bool same = ( nodeA && nodeB ) ? ( nodeA->GetName() == nodeB->GetName() )
-                                                 : ( ( nodeA == nullptr ) && ( nodeB == nullptr ) );
-            if ( !same )
+            if ( property.IsArray() )
             {
-                return false;
+                const Array<Node *> & nodesA = *property.GetPtrToArray<Node *>( baseA );
+                const Array<Node *> & nodesB = *property.GetPtrToArray<Node *>( baseB );
+                if ( nodesA.GetSize() != nodesB.GetSize() )
+                {
+                    return false;
+                }
+                const size_t numNodes = nodesA.GetSize();
+                for ( size_t i = 0; i < numNodes; ++i )
+                {
+                    if ( nodesA[ i ]->GetName() != nodesB[ i ]->GetName() )
+                    {
+                        return false;
+                    }
+                }
+                break;
+            }
+            else
+            {
+                const Node * nodeA = *property.GetPtrToPropertyCustom<Node *>( baseA );
+                const Node * nodeB = *property.GetPtrToPropertyCustom<Node *>( baseB );
+                const bool same = ( nodeA && nodeB ) ? ( nodeA->GetName() == nodeB->GetName() )
+                                                     : ( ( nodeA == nullptr ) && ( nodeB == nullptr ) );
+                if ( !same )
+                {
+                    return false;
+                }
             }
             break;
         }
